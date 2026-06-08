@@ -1,0 +1,57 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- AssemblyName drives the output .exe filename ("ISG Desk.exe"). RootNamespace stays
+         as NetScopeDiagnosticCenter so the C# namespace tree (invisible to users) doesn't
+         have to be rewritten across 100+ files. -->
+    <AssemblyName>ISG Desk</AssemblyName>
+    <RootNamespace>NetScopeDiagnosticCenter</RootNamespace>
+    <!-- Display metadata (visible in File Explorer / Task Manager). -->
+    <AssemblyTitle>ISG Desk</AssemblyTitle>
+    <Product>ISG Desk - IT Support &amp; Network Diagnostics</Product>
+    <Description>ISG Desk - IT Support &amp; Network Diagnostics</Description>
+    <Version>1.0.0</Version>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
+    <InformationalVersion>1.0.0</InformationalVersion>
+
+    <!-- Publish defaults: framework-dependent single-file (small, requires .NET 8 runtime). -->
+    <PublishSingleFile Condition="'$(PublishProfile)'=='Portable'">true</PublishSingleFile>
+    <SelfContained Condition="'$(PublishProfile)'=='Portable'">false</SelfContained>
+    <RuntimeIdentifier Condition="'$(PublishProfile)'=='Portable'">win-x64</RuntimeIdentifier>
+    <PublishReadyToRun Condition="'$(PublishProfile)'=='Portable'">true</PublishReadyToRun>
+  </PropertyGroup>
+
+  <!-- Brand logo — three variants, embedded as WPF resources. -->
+  <!-- logo.png:             original RGB (white background) — Window.Icon for taskbar/alt-tab. -->
+  <!-- logo-transparent.png: RGBA alpha — used on light backgrounds (kept for future light theme). -->
+  <!-- logo-light.png:       RGBA alpha + dark navy elements flipped to white — sidebar (dark theme). -->
+  <ItemGroup>
+    <Resource Include="Assets\logo.png" />
+    <Resource Include="Assets\logo-transparent.png" />
+    <Resource Include="Assets\logo-light.png" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Lextm.SharpSnmpLib" Version="12.5.7" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="8.0.0" />
+    <PackageReference Include="Serilog" Version="3.1.1" />
+    <PackageReference Include="Serilog.Sinks.File" Version="5.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Remove="NetScopeDiagnosticCenter.Tests\**" />
+    <Page Remove="NetScopeDiagnosticCenter.Tests\**" />
+    <ApplicationDefinition Remove="NetScopeDiagnosticCenter.Tests\**" />
+    <Resource Remove="NetScopeDiagnosticCenter.Tests\**" />
+    <None Remove="NetScopeDiagnosticCenter.Tests\**" />
+    <EmbeddedResource Remove="NetScopeDiagnosticCenter.Tests\**" />
+  </ItemGroup>
+
+</Project>

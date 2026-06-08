@@ -1,0 +1,14 @@
+<UserControl x:Class="NetScopeDiagnosticCenter.UI.Controls.WifiSparklineGraph"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             MinHeight="60">
+    <!--
+        Premium live sparkline: a thin anti-aliased line + soft gradient area, drawn at
+        the control's REAL pixel size (no Viewbox scaling → no fat/distorted strokes) with
+        a real wall-clock HH:mm:ss tick axis so the monitor can be followed in real time.
+        Code-behind drawing, like the other Wi-Fi charts.
+    -->
+    <Border Background="#0F172A" CornerRadius="6" ClipToBounds="True">
+        <Canvas x:Name="PlotCanvas" Background="Transparent" />
+    </Border>
+</UserControl>
