@@ -38,6 +38,13 @@ public partial class App : Application
 
         var mainWindow = Services.GetRequiredService<MainWindow>();
         MainWindow = mainWindow;
+
+        // Default landing page → kick off the Technician Home snapshot load now
+        // (local-only, non-blocking, single-load guarded). Lives here rather than in
+        // the MainViewModel constructor so constructing the VM — e.g. in the DI
+        // composition tests — has no process-spawning side effect.
+        _ = Services.GetRequiredService<MainViewModel>().StartInitialLoadAsync();
+
         mainWindow.Show();
     }
 
@@ -88,6 +95,10 @@ public partial class App : Application
         services.AddTransient<SnmpPrinterCollector>();
         services.AddTransient<PrinterQueueInstaller>();
         services.AddTransient<NetworkDeviceCollector>();
+
+        // Diagnosis page repair actions — the only collectors that CHANGE system state
+        // (flush DNS, renew DHCP, reset Winsock, restart adapter). Explicit, time-boxed.
+        services.AddTransient<NetworkRepairService>();
 
         // Technician Home: read-only local system snapshot (identity, OS, network, org,
         // security posture). No network activity — safe on page load.

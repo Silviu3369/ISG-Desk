@@ -1,6 +1,7 @@
 using System.Windows.Input;
 using NetScopeDiagnosticCenter.Collectors;
 using NetScopeDiagnosticCenter.Collectors.Shared;
+using NetScopeDiagnosticCenter.Collectors.Wifi;
 using NetScopeDiagnosticCenter.Core;
 using NetScopeDiagnosticCenter.Core.Models;
 using NetScopeDiagnosticCenter.Infrastructure;
@@ -31,6 +32,11 @@ public sealed class NetworkDevicesViewModel : ObservableObject
     private readonly ILoggingService _logger;
     private readonly SnmpCredentialStore _snmpCredentialStore;
     private readonly IHost _host;
+    // Shared with the Wi-Fi module on purpose: label a device once (by MAC/IP), see it everywhere.
+    private readonly WifiDeviceFriendlyNameStore? _deviceLabelStore;
+    private string _selectedDeviceLabelText = string.Empty;
+    // True when the LAN scan is the most recent action, so the page headline follows it.
+    private bool _headlineFromScan;
 
     private NetworkDeviceResult? _lastNetworkDevice;
     private NetworkDeviceScanResult? _lastNetworkDeviceScan;
@@ -49,12 +55,14 @@ public sealed class NetworkDevicesViewModel : ObservableObject
         NetworkDeviceCollector collector,
         ILoggingService logger,
         IHost host,
-        SnmpCredentialStore snmpCredentialStore)
+        SnmpCredentialStore snmpCredentialStore,
+        WifiDeviceFriendlyNameStore? deviceLabelStore = null)
     {
         _collector = collector ?? throw new ArgumentNullException(nameof(collector));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _host = host ?? throw new ArgumentNullException(nameof(host));
         _snmpCredentialStore = snmpCredentialStore ?? throw new ArgumentNullException(nameof(snmpCredentialStore));
+        _deviceLabelStore = deviceLabelStore;
         _snmpCredentialStore.PropertyChanged += (_, e) => NotifySnmpCredentialChanged(e.PropertyName);
         _snmpCredentialStore.Load();
 
@@ -67,6 +75,107 @@ public sealed class NetworkDevicesViewModel : ObservableObject
         CancelNetworkDeviceScanCommand = new RelayCommand(_ => CancelNetworkDeviceScan());
         CopyNetworkDeviceSummaryCommand = new RelayCommand(_ => CopyNetworkDeviceSummary());
         ForgetNetworkDeviceSnmpCredentialCommand = new RelayCommand(_ => ForgetNetworkDeviceSnmpCredential());
+        SaveDeviceLabelCommand = new RelayCommand(_ => SaveSelectedDeviceLabel(), _ => SelectedNetworkDeviceScanResult is not null && _deviceLabelStore is not null);
+        ClearDeviceLabelCommand = new RelayCommand(_ => ClearSelectedDeviceLabel(), _ => SelectedNetworkDeviceScanResult is not null && _deviceLabelStore is not null);
+    }
+
+    public ICommand SaveDeviceLabelCommand { get; }
+    public ICommand ClearDeviceLabelCommand { get; }
+
+    /// <summary>Editable label for the selected scan row ("Imprimanta etaj 2"). Persisted per MAC/IP.</summary>
+    public string SelectedDeviceLabelText
+    {
+        get => _selectedDeviceLabelText;
+        set => SetProperty(ref _selectedDeviceLabelText, value);
+    }
+
+    private void SaveSelectedDeviceLabel()
+    {
+        var device = SelectedNetworkDeviceScanResult;
+        if (device is null || _deviceLabelStore is null)
+        {
+            _host.NotifyStatus("Select a discovered device first, then save its label.");
+            return;
+        }
+
+        var key = WifiDeviceFriendlyNameStore.BuildKey(device.MacAddress, device.Address);
+        var label = SelectedDeviceLabelText.Trim();
+        if (string.IsNullOrEmpty(label))
+        {
+            ClearSelectedDeviceLabel();
+            return;
+        }
+
+        _deviceLabelStore.SaveName(key, label);
+        device.FriendlyLabel = label;
+        RefreshDeviceLabelBindings();
+        _host.NotifyStatus($"Label saved for {device.AddressDisplay}: {label}");
+    }
+
+    private void ClearSelectedDeviceLabel()
+    {
+        var device = SelectedNetworkDeviceScanResult;
+        if (device is null || _deviceLabelStore is null)
+        {
+            return;
+        }
+
+        _deviceLabelStore.RemoveName(WifiDeviceFriendlyNameStore.BuildKey(device.MacAddress, device.Address));
+        device.FriendlyLabel = string.Empty;
+        SelectedDeviceLabelText = string.Empty;
+        RefreshDeviceLabelBindings();
+        _host.NotifyStatus($"Label removed for {device.AddressDisplay}.");
+    }
+
+    /// <summary>Maps saved labels onto freshly scanned devices (key: MAC, fallback IP).</summary>
+    private void ApplyDeviceLabels(NetworkDeviceScanResult? scan)
+    {
+        if (scan is null || _deviceLabelStore is null || scan.Devices.Count == 0)
+        {
+            return;
+        }
+
+        var labels = _deviceLabelStore.Load();
+        if (labels.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var device in scan.Devices)
+        {
+            if (labels.TryGetValue(WifiDeviceFriendlyNameStore.BuildKey(device.MacAddress, device.Address), out var label))
+            {
+                device.FriendlyLabel = label;
+            }
+        }
+    }
+
+    private void RefreshDeviceLabelBindings()
+    {
+        OnPropertyChanged(nameof(LastNetworkDeviceScan));
+        OnPropertyChanged(nameof(SelectedNetworkDeviceScanResult));
+        OnPropertyChanged(nameof(SelectedNetworkDeviceScanResultSummary));
+    }
+
+    /// <summary>Page headline: follows whichever ran last — single device check or LAN scan.</summary>
+    public string HeadlineVerdict =>
+        _headlineFromScan && LastNetworkDeviceScan is not null
+            ? LastNetworkDeviceScan.VerdictDisplay
+            : LastNetworkDevice?.VerdictDisplay
+              ?? LastNetworkDeviceScan?.VerdictDisplay
+              ?? "No network device check has been run yet";
+
+    public string HeadlineSeverity =>
+        _headlineFromScan && LastNetworkDeviceScan is not null
+            ? LastNetworkDeviceScan.Severity
+            : LastNetworkDevice?.Severity
+              ?? LastNetworkDeviceScan?.Severity
+              ?? "Unknown";
+
+    private void NotifyHeadlineChanged()
+    {
+        OnPropertyChanged(nameof(HeadlineVerdict));
+        OnPropertyChanged(nameof(HeadlineSeverity));
     }
 
     public IReadOnlyList<string> NetworkDeviceSnmpProtocols { get; } = [SnmpProtocolVersion.V2C, SnmpProtocolVersion.V3AuthPriv];
@@ -126,7 +235,7 @@ public sealed class NetworkDevicesViewModel : ObservableObject
 
             if (scan.IsRunning)
             {
-                return "Scan is running. Devices that answer SNMP will appear here.";
+                return "Scan is running. Live devices appear here as they are discovered and identified.";
             }
 
             if (!string.IsNullOrWhiteSpace(scan.SkippedReason))
@@ -136,7 +245,7 @@ public sealed class NetworkDevicesViewModel : ObservableObject
 
             if (!string.IsNullOrWhiteSpace(scan.Source) || scan.ScannedHosts > 0)
             {
-                return "No SNMP network devices were found in this scan. Check the range, SNMP credentials, UDP 161, and device ACLs.";
+                return "No live devices were found in this range — every host failed both ping and the ARP/neighbor check.";
             }
 
             return "No LAN scan results yet.";
@@ -268,6 +377,8 @@ public sealed class NetworkDevicesViewModel : ObservableObject
         {
             if (SetProperty(ref _lastNetworkDevice, value))
             {
+                _headlineFromScan = false;
+                NotifyHeadlineChanged();
                 EnsureInterfaceFilterShowsResult(value);
                 OnPropertyChanged(nameof(FilteredNetworkDeviceInterfaces));
                 OnPropertyChanged(nameof(NetworkDeviceInterfaceFilterSummary));
@@ -285,6 +396,8 @@ public sealed class NetworkDevicesViewModel : ObservableObject
         {
             if (SetProperty(ref _lastNetworkDeviceScan, value))
             {
+                _headlineFromScan = true;
+                NotifyHeadlineChanged();
                 var selectedAddress = SelectedNetworkDeviceScanResult?.Address;
                 var nextSelection =
                     value?.Devices.FirstOrDefault(device => device.Address.Equals(selectedAddress, StringComparison.OrdinalIgnoreCase))
@@ -314,6 +427,11 @@ public sealed class NetworkDevicesViewModel : ObservableObject
             {
                 SetNetworkDeviceTarget(value.Address, fromScanSelection: true);
             }
+
+            // Keep the label editor in sync with the selected row.
+            SelectedDeviceLabelText = value?.FriendlyLabel ?? string.Empty;
+            (SaveDeviceLabelCommand as RelayCommand)?.RaiseCanExecuteChanged();
+            (ClearDeviceLabelCommand as RelayCommand)?.RaiseCanExecuteChanged();
 
             NotifyNetworkDeviceScanStateChanged();
         }
@@ -535,10 +653,12 @@ public sealed class NetworkDevicesViewModel : ObservableObject
         var token = networkDeviceScanCancellation.Token;
         try
         {
-            LastNetworkDeviceScan = await _collector.ScanLocalSubnetAsync(
+            var completedScan = await _collector.ScanLocalSubnetAsync(
                 options,
                 token,
                 CreateNetworkDeviceScanProgressHandler());
+            ApplyDeviceLabels(completedScan);
+            LastNetworkDeviceScan = completedScan;
             if (!ReferenceEquals(_networkDeviceScanCancellation, networkDeviceScanCancellation))
             {
                 return;
@@ -604,11 +724,13 @@ public sealed class NetworkDevicesViewModel : ObservableObject
         var token = networkDeviceScanCancellation.Token;
         try
         {
-            LastNetworkDeviceScan = await _collector.ScanRangeAsync(
+            var completedScan = await _collector.ScanRangeAsync(
                 range,
                 options,
                 token,
                 CreateNetworkDeviceScanProgressHandler());
+            ApplyDeviceLabels(completedScan);
+            LastNetworkDeviceScan = completedScan;
             if (!ReferenceEquals(_networkDeviceScanCancellation, networkDeviceScanCancellation))
             {
                 return;
@@ -795,6 +917,7 @@ public sealed class NetworkDevicesViewModel : ObservableObject
 
     private void ApplyNetworkDeviceScanProgress(NetworkDeviceScanResult scan)
     {
+        ApplyDeviceLabels(scan);
         LastNetworkDeviceScan = scan;
         _host.NotifyStatus(scan.ProgressText);
     }

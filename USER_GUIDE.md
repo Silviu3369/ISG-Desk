@@ -25,7 +25,7 @@ Ghid complet pentru helpdesk IT. Cititi mai intai [QUICKSTART.md](QUICKSTART.md)
 
 ISG Desk este o aplicatie WPF .NET 8 care ruleaza local pe statia tehnicianului. Nu trimite date in cloud si nu deschide porturi de ascultare.
 
-Aplicatia cere drepturi de administrator la pornire prin `app.manifest`. Pastram acest comportament pentru testare usoara si pentru operatii Windows care pot cere privilegii ridicate.
+Aplicatia porneste fara prompt UAC (`asInvoker` in `app.manifest`) ca sa poata fi folosita si de un cont standard, in mod read-only. Probele care cer privilegii ridicate (BitLocker, TPM, contoarele S.M.A.R.T. de temperatura/uzura) afiseaza "Requires admin" pana cand rulezi elevat — fie din butonul "Restart as administrator" de pe tile-ul ADMIN MODE din Technician Home, fie cu click dreapta > Run as administrator.
 
 Scanarea este limitata intentionat:
 
@@ -55,6 +55,7 @@ Technician Home este pagina de start operationala, read-only:
 - Network snapshot: adapter, IPv4, gateway, DNS, DHCP, MAC, Wi-Fi SSID
 - Organization: domain/workgroup, Entra/hybrid join, MDM, logon server
 - Security posture: Defender, Firewall, BitLocker, UAC, Secure Boot, TPM, pending reboot, activation
+- Storage & Disk Health (S.M.A.R.T.): stare per disc fizic (SSD/HDD/NVMe) din MSFT_PhysicalDisk — Healthy/Warning/Unhealthy plus predictie de defectare; temperatura, uzura SSD si ore de functionare apar cand aplicatia ruleaza ca administrator; bare de spatiu liber pe fiecare volum fix (Critical sub 5% sau 5 GB liber, Warning sub 12% sau 15 GB)
 - Ultima diagnoza si actiuni rapide catre modulele principale
 
 Technician Home nu este o copie a meniului si nu ruleaza scanari de retea la incarcare. Colecteaza doar informatii locale read-only si afiseaza sumarul ultimei diagnoze cand exista.
@@ -63,7 +64,7 @@ Technician Home nu este o copie a meniului si nu ruleaza scanari de retea la inc
 
 ## Diagnosis
 
-Diagnosis este modulul fuzionat pentru diagnoza PC-ului: Quick Diagnosis, Deep Ping & Path si Manual Port Test sunt in aceeasi pagina.
+Diagnosis este modulul fuzionat pentru diagnoza PC-ului: Quick Diagnosis, Deep Ping & Path (cu traceroute manual), Manual Port Test si Repair Actions sunt in aceeasi pagina.
 
 ### Quick Diagnosis
 
@@ -83,6 +84,7 @@ Rezultatul include:
 - Verdict generat de `RuleEngine`
 - Diagnostic timeline cu durata fiecarei etape
 - Technical Details cu evidence, limitations, recommended actions, warnings si score penalties
+- Comparatie cu rularea anterioara din sesiune ("Previous run HH:mm:ss: 92/100 ... score +8 — improved") — confirmi imediat daca un fix a ajutat
 
 ### Deep Ping & Path
 
@@ -93,6 +95,8 @@ Ruleaza ping/jitter pentru un target ales:
 - Packet loss, min/avg/max latency si jitter
 - Praguri diferite pentru gateway, internet, target si DNS
 
+Tot aici este si **Trace Route** manual (max 15 hops, bounded): foloseste targetul din campul de ping (sau beacon-ul de internet cand e gol) si eticheteaza fiecare hop ca `local` sau `isp/internet`, ca sa vezi unde se rupe calea fara sa astepti ca Quick Diagnosis sa detecteze pana.
+
 ### Manual Port Test
 
 Testeaza un `host:port` manual:
@@ -100,6 +104,19 @@ Testeaza un `host:port` manual:
 - Porturi rapide: 22, 80, 443, 445, 3389, 9100, 161
 - Verdict: open, refused sau timeout
 - Latenta pana la connect/refuse
+
+### Repair Actions
+
+Singura sectiune din aplicatie care MODIFICA sistemul — primul ajutor de retea, cu confirmare inainte de actiunile care intrerup conexiunea si cu rezultatul exact afisat dupa:
+
+| Actiune | Comanda | Admin | Observatii |
+| --- | --- | --- | --- |
+| Flush DNS Cache | `Clear-DnsClientCache` | Nu | Fara intrerupere |
+| Renew DHCP Lease | `ipconfig /release` + `/renew` | Nu | Conexiunea cade cateva secunde; afiseaza noile IP-uri DHCP |
+| Reset Winsock | `netsh winsock reset` | Da | Cere restart Windows |
+| Restart Adapter | `Restart-NetAdapter` pe adaptorul activ din ultima diagnoza | Da | Buton dezactivat pana exista o diagnoza |
+
+Dupa o reparatie, aplicatia iti sugereaza sa rulezi din nou Quick Diagnosis — linia "Previous run" de pe verdict arata imediat daca scorul s-a imbunatatit.
 
 ---
 
@@ -109,9 +126,9 @@ Targeted Tests ruleaza doar cele 3 scenarii care au nevoie de un target concret.
 
 | Test | Input | Ce verifica |
 |----------|-------|-------------|
-| Internal Server or Share Access | server/UNC list | DNS, ping si TCP 445 |
-| DNS/Domain | DC override optional | DC discovery, Kerberos 88, LDAP 389, DNS lookup |
-| Service Access | host + porturi | DNS, ping si TCP pentru porturi specifice |
+| Internal Server or Share Access | server/UNC list | DNS, ping, TCP 445, acces UNC si lista share-urilor publicate de server (NetShareEnum — "ce share-uri exista pe SRV01", nu doar "portul e deschis") |
+| DNS/Domain | DC override optional | DC discovery (override > profil > DNS SRV automat > logon server), Kerberos 88, LDAP 389, SMB 445 si trustul contului de masina (Test-ComputerSecureChannel — clasicul "trust relationship failed"; cere drepturi de administrator, altfel apare ca neverificat) |
+| Service Access | host + porturi | DNS, ping, TCP pentru porturi specifice; pe porturile web (80/443/8080/8443) face si proba HTTP reala — "443:Open (HTTP 200)" confirma ca SERVICIUL raspunde, nu doar socketul |
 
 Testele cu input obligatoriu refuza rularea cand lipseste targetul. Targeturile recente sunt pastrate doar in memoria sesiunii curente, nu intr-un modul separat.
 
@@ -127,16 +144,27 @@ Citeste imprimantele instalate local si starea spoolerului.
 
 Se conecteaza la un print server UNC si listeaza queue-urile shared disponibile.
 
+**Auto-detect Server** gaseste serverul singur, in doua trepte: intai din conexiunile
+shared deja instalate pe PC, apoi (pe PC-uri in domeniu) din print serverele publicate
+in Active Directory (obiecte `printQueue`); cand exista mai multe, alege serverul cu
+cele mai multe cozi publicate si le raporteaza pe toate in activity feed.
+
+La instalarea unei cozi din Install poti bifa optional "Set the installed queue as the
+Windows default printer" — coza proaspat instalata devine si imprimanta implicita.
+
 ### Auto Safe Scan
 
-Detecteaza subnetul local si scaneaza controlat un `/24`:
+Detecteaza subnetul local si scaneaza controlat un `/24` **doar pe porturile de
+protocol de imprimare**:
 
 - 9100 RAW
 - 515 LPR
 - 631 IPP
-- 80/443 pentru web UI
 
-Rezultatul include clasificare heuristica pentru posibile imprimante.
+Porturile web (80/443) nu mai sunt scanate intentionat: faceau ca orice router/NAS/camera
+cu interfata web sa apara ca "possible printer". Identitatea se confirma prin SNMP, iar
+grila are filtrul "Only printers" (bifat implicit) care ascunde device-urile pe care
+SNMP le-a confirmat ca NU sunt imprimante (switch, NAS, UPS).
 
 ### Custom Range Scan
 
@@ -160,7 +188,18 @@ Instaleaza o coada de pe print server prin `Add-Printer -ConnectionName \\server
 
 ## Modulul Network Devices
 
-Network Devices este centrat pe SNMP pentru switch-uri, AP-uri, routere, firewall-uri si alte device-uri.
+Network Devices inventariaza TOATE device-urile vii din retea si identifica echipamentele de infrastructura prin SNMP.
+
+### Discovery scan (Auto Safe Scan / Scan Range)
+
+Scan in doua trepte:
+
+1. **Descoperire generala** — ping sweep paralel + tabela ARP/neighbor (prinde si hosturile care blocheaza ping), reverse DNS, nume NetBIOS (PC-uri Windows), vendor din MAC (baza OUI completa) si porturi-semnatura (9100 imprimanta, 445/3389 PC Windows, 8009 TV/cast, 22+80 echipament de retea).
+2. **Imbogatire SNMP** — doar device-urile care raspund pe UDP 161 primesc identitate completa (sysName, sysLocation, sysDescr).
+
+Clasificarea e onesta: SNMP = confidence High; porturi = Medium; doar vendor MAC = Low ("Probably ..."). Telefoanele moderne folosesc MAC-uri randomizate, deci vendorul lor apare "Unknown" — limitare de protocol, nu de aplicatie.
+
+**Etichete persistente**: selecteaza un device si scrie "Label / location" (ex: "Imprimanta etaj 2 — contabilitate"). Se salveaza per MAC si reapare la fiecare scan; baza de nume e comuna cu modulul Wi-Fi Analyzer. Locatia fizica nu se poate detecta din retea: vine din SNMP sysLocation (daca adminul l-a completat) sau din eticheta ta.
 
 ### SNMP Identity
 
@@ -285,7 +324,7 @@ Logurile Serilog sunt in `%LOCALAPPDATA%\ISG Desk\Logs\`, cu rolling daily, rete
 ### App nu porneste
 
 1. Inchide instanta veche `ISG Desk.exe` din Task Manager.
-2. Reporneste aplicatia si accepta promptul UAC.
+2. Reporneste aplicatia (nu mai apare prompt UAC la pornire; elevarea se face din butonul "Restart as administrator").
 3. Verifica logurile din `%LOCALAPPDATA%\ISG Desk\Logs\`.
 
 ### Quick Diagnosis dureaza peste 60s
@@ -321,7 +360,7 @@ Deschide pagina Reports si foloseste "Open Reports folder". Folderul este creat 
 - Windows 10 21H2+ sau Windows 11
 - .NET 8 Desktop Runtime pentru build framework-dependent
 - PowerShell 5.1+
-- Drepturi administrator la pornire, prin manifest
+- Porneste fara drepturi de administrator (asInvoker); elevarea este optionala, la un click, pentru BitLocker/TPM/S.M.A.R.T.
 
 ---
 

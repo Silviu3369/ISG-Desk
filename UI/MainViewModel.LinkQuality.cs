@@ -48,9 +48,18 @@ public sealed partial class MainViewModel : LinkQualityViewModel.IHost
 
     public LinkQualityResult LastLinkQualityResult => LinkQuality.LastLinkQualityResult;
 
+    // Manual traceroute (hop-by-hop path visibility on demand).
+    public TraceRouteResult? LastTraceRoute => LinkQuality.LastTraceRoute;
+    public bool HasTraceRoute => LinkQuality.HasTraceRoute;
+    public bool NoTraceRoute => LinkQuality.NoTraceRoute;
+    public string TraceRouteHopCountText => LinkQuality.TraceRouteHopCountText;
+    public string TraceRouteButtonText => LinkQuality.TraceRouteButtonText;
+    public string TraceRouteButtonIcon => LinkQuality.TraceRouteButtonIcon;
+
     public ICommand RefreshLinkQualityCommand => LinkQuality.RefreshLinkQualityCommand;
     public ICommand RunLinkQualityPingCommand => LinkQuality.RunLinkQualityPingCommand;
     public ICommand RunLinkQualityPathDiagnosticsCommand => LinkQuality.RunLinkQualityPathDiagnosticsCommand;
+    public ICommand RunTraceRouteCommand => LinkQuality.RunTraceRouteCommand;
     public ICommand CancelLinkQualityCommand => LinkQuality.CancelLinkQualityCommand;
     public ICommand ApplyLinkQualityTargetPresetCommand => LinkQuality.ApplyLinkQualityTargetPresetCommand;
     public ICommand ApplyLinkQualitySamplePresetCommand => LinkQuality.ApplyLinkQualitySamplePresetCommand;

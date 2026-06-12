@@ -8,13 +8,27 @@ public sealed class ScenarioEngine
 {
     private readonly TargetConnectivityCollector _targetCollector;
     private readonly DomainCollector _domainCollector;
+    private readonly DomainControllerDiscoveryCollector? _domainControllerDiscoveryCollector;
 
     public ScenarioEngine(
         TargetConnectivityCollector targetCollector,
         DomainCollector domainCollector)
+        : this(targetCollector, domainCollector, null)
+    {
+    }
+
+    /// <summary>
+    /// DI uses this ctor (most parameters win) so the DNS/Domain targeted test can
+    /// auto-discover DCs through DNS SRV when no override or profile target exists.
+    /// </summary>
+    public ScenarioEngine(
+        TargetConnectivityCollector targetCollector,
+        DomainCollector domainCollector,
+        DomainControllerDiscoveryCollector? domainControllerDiscoveryCollector)
     {
         _targetCollector = targetCollector;
         _domainCollector = domainCollector;
+        _domainControllerDiscoveryCollector = domainControllerDiscoveryCollector;
     }
 
     public async Task<ScenarioDiagnosisResult> RunAsync(
@@ -127,10 +141,18 @@ public sealed class ScenarioEngine
             foreach (var port in probe.Ports)
             {
                 result.Evidence.Add($"TCP {port.Port}: {(port.TcpSucceeded ? "Open" : "Failed")}.");
+                if (port.HasHttpProbe)
+                {
+                    result.Evidence.Add($"HTTP check {port.Port}: {port.HttpDetails}.");
+                }
             }
             if (HasShareProbe(probe))
             {
                 result.Evidence.Add($"Share path: {probe.ShareStatus}; {probe.ShareDetails}");
+            }
+            if (probe.ShareEnumStatus != "Not run")
+            {
+                result.Evidence.Add($"Shares on {target.Host}: {probe.ShareEnumSummary}");
             }
             result.Steps.Add(BuildTargetStep(probe, stepWatch.Elapsed.TotalMilliseconds));
         }
@@ -224,7 +246,50 @@ public sealed class ScenarioEngine
             IsCollectorOk(domain.CollectorStatus) ? string.Empty : domain.CollectorStatus,
             "Validate domain join state, DNS suffixes and detected logon server.");
 
+        // Machine-account trust ("trust relationship failed") — only meaningful for
+        // domain members; needs admin → degrades to Unknown with a hint.
+        var secureChannel = new SecureChannelCheckResult { Status = "Not run", Detail = "PC is not domain joined." };
+        if (domain.IsDomainJoined)
+        {
+            secureChannel = await _domainCollector.TestSecureChannelAsync(cancellationToken);
+            result.Evidence.Add($"Machine account trust: {secureChannel.Status}; {secureChannel.Detail}");
+            AddStep(result, "Machine account trust", "PC / Domain", secureChannel.Status,
+                [secureChannel.Detail],
+                secureChannel.Status == "Critical" ? secureChannel.Detail : string.Empty,
+                secureChannel.Status switch
+                {
+                    "Critical" => "Re-join the domain or run Test-ComputerSecureChannel -Repair / Reset-ComputerMachinePassword as administrator.",
+                    "Unknown" => "Relaunch ISG Desk as administrator to verify the machine account trust.",
+                    _ => "No action needed — the machine account trust is healthy."
+                });
+        }
+
         var targets = BuildTargets(input.DomainControllerOverride, profile.DomainControllers, "Domain controller", [88, 389, 445]);
+
+        // Zero-config DC targets: when nothing is configured, ask DNS for the SRV
+        // records every AD domain publishes (_ldap._tcp.dc._msdcs.<domain>).
+        if (targets.Count == 0 &&
+            _domainControllerDiscoveryCollector is not null &&
+            domain.IsDomainJoined &&
+            !string.IsNullOrWhiteSpace(domain.DomainName) &&
+            domain.DomainName != "Not domain joined")
+        {
+            var discovery = await _domainControllerDiscoveryCollector.DiscoverAsync([domain.DomainName], cancellationToken);
+            if (discovery.Candidates.Count > 0)
+            {
+                result.Evidence.Add($"DNS SRV discovery: {discovery.Verdict}");
+                targets.AddRange(discovery.Candidates
+                    .Take(3)
+                    .Select(candidate => new DiagnosticTarget
+                    {
+                        Name = $"DC (DNS SRV)",
+                        Host = candidate.Host,
+                        Purpose = "Domain controller",
+                        Ports = [88, 389, 445]
+                    }));
+            }
+        }
+
         if (targets.Count == 0 &&
             domain.IsDomainJoined &&
             !string.IsNullOrWhiteSpace(domain.LogonServer) &&
@@ -287,10 +352,22 @@ public sealed class ScenarioEngine
                 "Check Kerberos 88, LDAP 389 and SMB 445 to the domain controller; DNS must be validated with real name resolution, not TCP 53 alone.");
         }
 
+        if (secureChannel.Status == "Critical")
+        {
+            return Finalize(result, "Machine account trust with the domain is broken", "Critical", "High", "PC / Domain", "Local Support",
+                "The DC is reachable but the secure channel failed — re-join the domain or run Test-ComputerSecureChannel -Repair / Reset-ComputerMachinePassword as administrator.");
+        }
+
         if (!domain.IsDomainJoined)
         {
             return Finalize(result, "Domain controller is reachable but this PC is not domain joined", "Warning", "High", "PC / Domain", "Local Support",
                 "If this workstation should be domain joined, verify join state, trust relationship and machine account health.");
+        }
+
+        if (secureChannel.Status == "Unknown" && domain.IsDomainJoined)
+        {
+            return Finalize(result, "DNS and domain connectivity look healthy (trust not verified)", "OK", "Medium", "DNS / Domain", "Local Support",
+                "DC reachability is healthy. Relaunch as administrator to also verify the machine account trust.");
         }
 
         return Finalize(result, "DNS and domain connectivity look healthy", "OK", "High", "DNS / Domain", "Local Support",
@@ -355,20 +432,26 @@ public sealed class ScenarioEngine
     private static DiagnosisStepResult BuildTargetStep(TargetProbeResult probe, double durationMs)
     {
         var status = ProbeStatus(probe);
+        var evidence = new List<string>
+        {
+            $"DNS: {probe.DnsStatus}; resolved address: {probe.ResolvedAddress}.",
+            $"Ping: {probe.PingStatus}; latency: {probe.LatencyText}.",
+            $"Packet loss: {probe.LossText}.",
+            $"Ports: {probe.PortSummary}.",
+            ShareEvidence(probe)
+        };
+        if (probe.ShareEnumStatus != "Not run")
+        {
+            evidence.Add($"Published shares: {probe.ShareEnumSummary}");
+        }
+
         return new DiagnosisStepResult
         {
             Name = probe.Target.Host,
             Layer = probe.Target.Purpose,
             Status = status,
             DurationMs = durationMs,
-            Evidence =
-            [
-                $"DNS: {probe.DnsStatus}; resolved address: {probe.ResolvedAddress}.",
-                $"Ping: {probe.PingStatus}; latency: {probe.LatencyText}.",
-                $"Packet loss: {probe.LossText}.",
-                $"Ports: {probe.PortSummary}.",
-                ShareEvidence(probe)
-            ],
+            Evidence = evidence,
             Error = IsCollectorOk(probe.CollectorStatus) ? string.Empty : probe.CollectorStatus,
             Recommendation = probe.Verdict switch
             {

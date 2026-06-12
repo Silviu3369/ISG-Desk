@@ -36,7 +36,7 @@ public class AppCompositionTests : IDisposable
     /// against the private static ConfigureServices method. We do not instantiate App
     /// itself (that would require a running WPF dispatcher).
     /// </summary>
-    private IServiceProvider BuildProvider()
+    private IServiceProvider BuildProvider(Action<IServiceCollection>? overrideServices = null)
     {
         var services = new ServiceCollection();
         var configureMethod = typeof(App).GetMethod(
@@ -45,7 +45,24 @@ public class AppCompositionTests : IDisposable
         configureMethod.Should().NotBeNull("App.ConfigureServices is the composition root and must remain accessible");
         configureMethod!.Invoke(null, [services]);
         services.AddSingleton(new AppStorageService(_isolatedAppData));
+        overrideServices?.Invoke(services);
         return services.BuildServiceProvider();
+    }
+
+    /// <summary>
+    /// Counts collector invocations without spawning PowerShell. Used only by the
+    /// construction-side-effect regression test below; every other test resolves
+    /// the unmodified production graph.
+    /// </summary>
+    private sealed class CountingOverviewCollector : ISystemOverviewCollector
+    {
+        public int Calls { get; private set; }
+
+        public Task<SystemOverview> GetAsync(CancellationToken cancellationToken = default)
+        {
+            Calls++;
+            return Task.FromResult(new SystemOverview());
+        }
     }
 
     [Fact]
@@ -117,6 +134,27 @@ public class AppCompositionTests : IDisposable
         using var provider = (ServiceProvider)BuildProvider();
 
         provider.GetRequiredService<MainViewModel>().Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task MainViewModel_Construction_DoesNotRunOverviewCollector()
+    {
+        // Regression: the ctor used to fire-and-forget TechnicianHome.EnsureLoadedAsync(),
+        // so every test resolving MainViewModel spawned a real powershell.exe (and could
+        // orphan isgdesk-*.ps1 temp scripts in %TEMP% when xunit exited first). The
+        // kick-off is now an explicit hook App.OnStartup calls after creating the window.
+        var collector = new CountingOverviewCollector();
+        using var provider = (ServiceProvider)BuildProvider(
+            services => services.AddSingleton<ISystemOverviewCollector>(collector));
+        var mainVm = provider.GetRequiredService<MainViewModel>();
+
+        collector.Calls.Should().Be(0, "constructing MainViewModel must not start the overview collection");
+
+        await mainVm.StartInitialLoadAsync();
+        collector.Calls.Should().Be(1, "App.OnStartup's explicit hook starts the load");
+
+        await mainVm.StartInitialLoadAsync();
+        collector.Calls.Should().Be(1, "EnsureLoadedAsync is single-load guarded");
     }
 
     [Fact]

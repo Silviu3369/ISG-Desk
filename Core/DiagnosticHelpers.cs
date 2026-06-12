@@ -15,6 +15,28 @@ public static class DiagnosticHelpers
         collectorStatus.Equals("OK", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
+    /// One-line "previous vs current" Quick Diagnosis comparison for the verdict card,
+    /// e.g. "Previous run 14:02:11: 92/100 (Warning — DNS failure) · score +8 — improved".
+    /// Empty when either run is missing.
+    /// </summary>
+    public static string BuildDiagnosisComparison(
+        Models.NetworkDiagnosisResult? previous,
+        Models.NetworkDiagnosisResult? current)
+    {
+        if (previous is null || current is null) return string.Empty;
+
+        var delta = current.HealthScore.Score - previous.HealthScore.Score;
+        var trend = delta > 0
+            ? $"score +{delta} — improved"
+            : delta < 0
+                ? $"score {delta} — degraded"
+                : "score unchanged";
+
+        return $"Previous run {previous.CreatedAt:HH:mm:ss}: {previous.HealthScore.Score}/100 " +
+               $"({previous.Verdict.Severity} — {previous.Verdict.Title}) · {trend}";
+    }
+
+    /// <summary>
     /// Formats a nullable double for display, returning "Unknown" when the value is absent.
     /// </summary>
     public static string FormatNullable(double? value) =>

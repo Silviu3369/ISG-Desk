@@ -6,19 +6,21 @@ using NetScopeDiagnosticCenter.Infrastructure;
 namespace NetScopeDiagnosticCenter.Collectors;
 
 /// <summary>
-/// Bounded traceroute to a fixed public beacon (default 1.1.1.1) so the diagnosis can
-/// attribute a fault to LOCAL (switch/gateway) vs ISP vs beyond — the path-visibility
-/// gap professional tools have. Uses <c>Test-NetConnection -TraceRoute</c> (locale-stable
-/// cmdlet, no text parsing), capped at 15 hops + a hard collector timeout so a black-hole
-/// path can't hang the diagnosis. Target is a fixed literal — never user input.
+/// Bounded traceroute (default beacon 1.1.1.1) so the diagnosis can attribute a fault
+/// to LOCAL (switch/gateway) vs ISP vs beyond — the path-visibility gap professional
+/// tools have. Uses <c>Test-NetConnection -TraceRoute</c> (locale-stable cmdlet, no text
+/// parsing), capped at 15 hops + a hard collector timeout so a black-hole path can't
+/// hang the diagnosis. Caller-supplied targets (manual traceroute on the Diagnosis page)
+/// are validated upstream and embedded via <see cref="JsonCollectorBase.PsSingleQuote"/>.
 /// </summary>
-public sealed class TraceRouteCollector : JsonCollectorBase
+public class TraceRouteCollector : JsonCollectorBase
 {
     public TraceRouteCollector(PowerShellRunner powerShellRunner) : base(powerShellRunner)
     {
     }
 
-    public async Task<TraceRouteResult> TraceAsync(string target = "1.1.1.1", CancellationToken cancellationToken = default)
+    // Virtual so unit tests can fake hop results without spawning PowerShell.
+    public virtual async Task<TraceRouteResult> TraceAsync(string target = "1.1.1.1", CancellationToken cancellationToken = default)
     {
         var safeTarget = PsSingleQuote(target);
         var script = $$"""

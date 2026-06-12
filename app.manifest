@@ -4,7 +4,11 @@
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v2">
     <security>
       <requestedPrivileges xmlns="urn:schemas-microsoft-com:asm.v3">
-        <requestedExecutionLevel level="requireAdministrator" uiAccess="false" />
+        <!-- asInvoker: the app opens without a UAC prompt for any user; admin-only
+             probes (BitLocker, TPM, disk S.M.A.R.T. counters) degrade to "Requires
+             admin" and Technician Home offers a one-click "Restart as administrator".
+             Set back to level="requireAdministrator" to force elevation at launch. -->
+        <requestedExecutionLevel level="asInvoker" uiAccess="false" />
       </requestedPrivileges>
     </security>
   </trustInfo>

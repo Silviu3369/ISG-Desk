@@ -4,7 +4,7 @@
 
 ## Lansare
 
-Dublu-click pe `ISG Desk.exe` sau shortcut-ul **ISG Desk** din meniul Start. Aplicatia cere drepturi de administrator la pornire si deschide fereastra principala cu sidebar in stanga si Technician Home in centru.
+Dublu-click pe `ISG Desk.exe` sau shortcut-ul **ISG Desk** din meniul Start. Aplicatia porneste fara prompt UAC (merge si pe cont standard) si deschide fereastra principala cu sidebar in stanga si Technician Home in centru. Probele care cer privilegii (BitLocker, TPM, S.M.A.R.T. detaliat) se activeaza cu butonul **Restart as administrator** din Technician Home.
 
 In stanga jos ai panel-ul Status: ping live la gateway, indicator Running si ultima activitate.
 

@@ -20,6 +20,38 @@ public class DiagnosticHelpersTests
     }
 
     [Fact]
+    public void BuildDiagnosisComparison_MissingEitherRun_ReturnsEmpty()
+    {
+        var run = MakeDiagnosis(80, "OK", "Healthy");
+
+        DiagnosticHelpers.BuildDiagnosisComparison(null, run).Should().BeEmpty();
+        DiagnosticHelpers.BuildDiagnosisComparison(run, null).Should().BeEmpty();
+        DiagnosticHelpers.BuildDiagnosisComparison(null, null).Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData(92, 100, "score +8 — improved")]
+    [InlineData(100, 85, "score -15 — degraded")]
+    [InlineData(74, 74, "score unchanged")]
+    public void BuildDiagnosisComparison_ReportsScoreTrend(int previousScore, int currentScore, string expectedTrend)
+    {
+        var previous = MakeDiagnosis(previousScore, "Warning", "DNS failure");
+        var current = MakeDiagnosis(currentScore, "OK", "No clear network fault detected");
+
+        var text = DiagnosticHelpers.BuildDiagnosisComparison(previous, current);
+
+        text.Should().Contain($"{previousScore}/100");
+        text.Should().Contain("Warning — DNS failure");
+        text.Should().Contain(expectedTrend);
+    }
+
+    private static NetworkDiagnosisResult MakeDiagnosis(int score, string severity, string title) => new()
+    {
+        HealthScore = new HealthScoreResult { Score = score, Status = severity },
+        Verdict = new DiagnosisVerdict { Title = title, Severity = severity }
+    };
+
+    [Fact]
     public void FormatNullable_HasValue_ReturnsFormatted()
     {
         DiagnosticHelpers.FormatNullable(12.345).Should().Be(12.345.ToString("N2"));

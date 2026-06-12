@@ -86,4 +86,55 @@ public class MonitoringSummaryTests
         var s = MonitoringSummary.From(new List<MonitoringSample> { Sample(10) });
         s.JitterMs.Should().BeNull();
     }
+
+    [Fact]
+    public void LossDisplay_NoSamples_SaysWaitingNotZeroLoss()
+    {
+        // The sidebar must not claim "loss 0%" before the monitor has measured anything.
+        MonitoringSummary.Empty.LossDisplay.Should().Be("waiting for samples");
+    }
+
+    [Fact]
+    public void LossDisplay_WithSamples_FormatsLossPercent()
+    {
+        var samples = new List<MonitoringSample>
+        {
+            Sample(10), Sample(null, ok: false), Sample(15), Sample(null, ok: false)
+        };
+        MonitoringSummary.From(samples).LossDisplay.Should().Be("loss 50%");
+    }
+
+    [Fact]
+    public void TooltipText_NoSamples_ExplainsWaitingState()
+    {
+        MonitoringSummary.Empty.TooltipText.Should().Contain("No samples yet");
+    }
+
+    [Fact]
+    public void TooltipText_WithSamples_IncludesWindowStatistics()
+    {
+        var samples = new List<MonitoringSample>
+        {
+            Sample(10), Sample(20), Sample(15), Sample(null, ok: false)
+        };
+        var text = MonitoringSummary.From(samples).TooltipText;
+        text.Should().Contain("4 sample(s)");
+        text.Should().Contain("avg 15.0 ms");
+        text.Should().Contain("min 10.0 ms");
+        text.Should().Contain("max 20.0 ms");
+        text.Should().Contain("loss 25.0%");
+        text.Should().Contain("(1 failed)");
+    }
+
+    [Fact]
+    public void TooltipText_AllFailures_ShowsDashForLatencies()
+    {
+        var samples = new List<MonitoringSample>
+        {
+            Sample(null, ok: false), Sample(null, ok: false)
+        };
+        var text = MonitoringSummary.From(samples).TooltipText;
+        text.Should().Contain("avg —");
+        text.Should().Contain("loss 100.0%");
+    }
 }

@@ -1,5 +1,6 @@
 using System.IO;
 using NetScopeDiagnosticCenter.Collectors;
+using NetScopeDiagnosticCenter.Collectors.Wifi;
 using NetScopeDiagnosticCenter.Core.Models;
 using NetScopeDiagnosticCenter.Infrastructure;
 using NetScopeDiagnosticCenter.UI.ViewModels;
@@ -163,7 +164,8 @@ public class NetworkDevicesViewModelTests
 
     private static (NetworkDevicesViewModel vm, FakeHost host, SnmpCredentialStore store) Build(
         SnmpCredentialStore? store = null,
-        NetworkDeviceCollector? collector = null)
+        NetworkDeviceCollector? collector = null,
+        WifiDeviceFriendlyNameStore? labelStore = null)
     {
         var psRunner = new PowerShellRunner(new NullLogger());
         var snmp = new SnmpClientService();
@@ -171,9 +173,12 @@ public class NetworkDevicesViewModelTests
         var host = new FakeHost();
         store ??= new SnmpCredentialStore(new SecureCredentialService(
             new AppStorageService(Path.Combine(Path.GetTempPath(), "NetScopeTests-NetworkDevices-" + Guid.NewGuid().ToString("N")))));
-        var vm = new NetworkDevicesViewModel(collector, new NullLogger(), host, store);
+        var vm = new NetworkDevicesViewModel(collector, new NullLogger(), host, store, labelStore);
         return (vm, host, store);
     }
+
+    private static WifiDeviceFriendlyNameStore BuildLabelStore() =>
+        new(new AppStorageService(Path.Combine(Path.GetTempPath(), "NetScopeTests-DeviceLabels-" + Guid.NewGuid().ToString("N"))));
 
     [Fact]
     public void Construction_DefaultsAreSensible()
@@ -651,7 +656,7 @@ public class NetworkDevicesViewModelTests
         vm.HasNetworkDeviceScanResults.Should().BeFalse();
         vm.HasNoNetworkDeviceScanResults.Should().BeTrue();
         vm.HasSelectedNetworkDeviceScanResult.Should().BeFalse();
-        vm.NetworkDeviceScanResultsEmptyText.Should().Contain("No SNMP network devices");
+        vm.NetworkDeviceScanResultsEmptyText.Should().Contain("No live devices");
     }
 
     [Fact]
@@ -1186,5 +1191,70 @@ public class NetworkDevicesViewModelTests
 
         FluentActions.Invoking(() => new NetworkDevicesViewModel(collector, new NullLogger(), new FakeHost(), null!))
             .Should().Throw<ArgumentNullException>();
+    }
+
+    [Fact]
+    public async Task ScanLocal_AppliesSavedLabels_AndHeadlineFollowsScan()
+    {
+        var labelStore = BuildLabelStore();
+        labelStore.SaveName(WifiDeviceFriendlyNameStore.BuildKey("AA:BB:CC:DD:EE:01", "192.168.1.10"), "Imprimanta etaj 2");
+        var collector = new FakeNetworkDeviceCollector(localScanFactory: _ => new NetworkDeviceScanResult
+        {
+            Source = "192.168.1.0/24",
+            Verdict = "Found 1 device(s) in 192.168.1.0/24; 0 answered SNMP.",
+            Severity = "OK",
+            Devices =
+            [
+                new NetworkDeviceResult { Address = "192.168.1.10", MacAddress = "AA:BB:CC:DD:EE:01", Verdict = "Online", Severity = "OK" }
+            ]
+        });
+        var (vm, _, _) = Build(collector: collector, labelStore: labelStore);
+
+        await ((NetScopeDiagnosticCenter.UI.AsyncRelayCommand)vm.ScanLocalNetworkDevicesCommand).ExecuteAsync(null);
+
+        var device = vm.LastNetworkDeviceScan!.Devices.Single();
+        device.FriendlyLabel.Should().Be("Imprimanta etaj 2");
+        device.DisplayName.Should().Be("Imprimanta etaj 2", "the technician label outranks every detected name");
+        vm.HeadlineVerdict.Should().Contain("Found 1 device(s)");
+        vm.HeadlineSeverity.Should().Be("OK");
+    }
+
+    [Fact]
+    public async Task SaveAndClearDeviceLabel_PersistAndUpdateTheRow()
+    {
+        var labelStore = BuildLabelStore();
+        var (vm, host, _) = Build(collector: new FakeNetworkDeviceCollector(), labelStore: labelStore);
+
+        await ((NetScopeDiagnosticCenter.UI.AsyncRelayCommand)vm.ScanLocalNetworkDevicesCommand).ExecuteAsync(null);
+        vm.SelectedNetworkDeviceScanResult.Should().NotBeNull();
+
+        vm.SelectedDeviceLabelText = "Switch rack parter";
+        vm.SaveDeviceLabelCommand.Execute(null);
+
+        vm.SelectedNetworkDeviceScanResult!.FriendlyLabel.Should().Be("Switch rack parter");
+        labelStore.Load().Values.Should().Contain("Switch rack parter");
+        host.StatusMessages.Should().Contain(message => message.Contains("Label saved"));
+
+        vm.ClearDeviceLabelCommand.Execute(null);
+
+        vm.SelectedNetworkDeviceScanResult.FriendlyLabel.Should().BeEmpty();
+        labelStore.Load().Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Headline_FollowsLatestAction()
+    {
+        var (vm, _, _) = Build(collector: new FakeNetworkDeviceCollector());
+        vm.NetworkDeviceTarget = "192.168.1.5";
+
+        await ((NetScopeDiagnosticCenter.UI.AsyncRelayCommand)vm.IdentifyNetworkDeviceCommand).ExecuteAsync(null);
+        vm.HeadlineVerdict.Should().Be("SNMP device identity confirmed.");
+
+        await ((NetScopeDiagnosticCenter.UI.AsyncRelayCommand)vm.ScanLocalNetworkDevicesCommand).ExecuteAsync(null);
+        vm.HeadlineVerdict.Should().Contain("Found 1");
+
+        vm.NetworkDeviceTarget = "192.168.1.6";
+        await ((NetScopeDiagnosticCenter.UI.AsyncRelayCommand)vm.IdentifyNetworkDeviceCommand).ExecuteAsync(null);
+        vm.HeadlineVerdict.Should().Be("SNMP device identity confirmed.", "the single-device check is now the latest action");
     }
 }

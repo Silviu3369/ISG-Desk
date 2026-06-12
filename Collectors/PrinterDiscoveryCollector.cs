@@ -253,13 +253,14 @@ public class PrinterDiscoveryCollector : JsonCollectorBase
         }
 
         var hostName = await TryReverseDnsAsync(address, cancellationToken);
+        // Only printer-protocol ports are scanned (9100/515/631), so every row here is a
+        // host speaking a print protocol — never a router/NAS that merely has a web UI.
         var hasPrintPort = openPorts.Contains(9100) || openPorts.Contains(515) || openPorts.Contains(631);
-        var hasWebPort = openPorts.Contains(80) || openPorts.Contains(443);
-        var classification = hasPrintPort ? "Likely printer" : hasWebPort ? "Possible printer" : "Unknown device";
-        var confidence = hasPrintPort ? "High" : hasWebPort ? "Low" : "Low";
+        var classification = hasPrintPort ? "Likely printer" : "Unknown device";
+        var confidence = hasPrintPort ? "High" : "Low";
         var reason = hasPrintPort
             ? "Printer protocol port is open."
-            : "Only web management ports are open; SNMP is needed to confirm identity.";
+            : "No printer protocol port answered; SNMP is needed to confirm identity.";
 
         return new PrinterScanResult
         {

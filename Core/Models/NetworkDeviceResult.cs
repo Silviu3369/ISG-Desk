@@ -25,6 +25,15 @@ public sealed class NetworkDeviceResult
     public string NeighborState { get; set; } = string.Empty;
     public string NeighborInterface { get; set; } = string.Empty;
     public bool PingReachable { get; set; }
+
+    /// <summary>Windows machine name from NetBIOS adapter status (empty for non-Windows hosts).</summary>
+    public string NetBiosName { get; set; } = string.Empty;
+
+    /// <summary>True when this address is the scan adapter's default gateway.</summary>
+    public bool IsGateway { get; set; }
+
+    /// <summary>Technician-assigned label ("Imprimanta etaj 2") persisted per MAC/IP.</summary>
+    public string FriendlyLabel { get; set; } = string.Empty;
     public SnmpDeviceInfo? Identity { get; set; }
     public List<PortProbeResult> Ports { get; set; } = [];
     public List<NetworkDeviceInterfaceInfo> Interfaces { get; set; } = [];
@@ -97,6 +106,37 @@ public sealed class NetworkDeviceResult
             : Ports.Any(port => port.TcpSucceeded)
                 ? string.Join(", ", Ports.Where(port => port.TcpSucceeded).Select(port => port.Port))
                 : "None open";
+
+    /// <summary>
+    /// Best human name for the device row: technician label > SNMP sysName > NetBIOS >
+    /// reverse DNS > MAC vendor — always something more useful than a bare IP when known.
+    /// </summary>
+    public string DisplayName
+    {
+        get
+        {
+            if (!string.IsNullOrWhiteSpace(FriendlyLabel)) return FriendlyLabel.Trim();
+            var sysName = Identity?.SysName;
+            if (!string.IsNullOrWhiteSpace(sysName)) return sysName.Trim();
+            if (!string.IsNullOrWhiteSpace(NetBiosName)) return NetBiosName.Trim();
+            if (!string.IsNullOrWhiteSpace(ReverseDnsName)) return ReverseDnsName.Trim();
+            if (!string.IsNullOrWhiteSpace(MacVendor)) return $"{MacVendor.Trim()} device";
+            return "Unknown";
+        }
+    }
+
+    /// <summary>SNMP sysLocation when populated by the admin; otherwise em dash.</summary>
+    public string LocationDisplay
+    {
+        get
+        {
+            var location = Identity?.SysLocation;
+            return string.IsNullOrWhiteSpace(location) ? "—" : location.Trim();
+        }
+    }
+
+    public string FriendlyLabelDisplay =>
+        string.IsNullOrWhiteSpace(FriendlyLabel) ? "—" : FriendlyLabel.Trim();
 
     private static string ValueOrUnknown(string? value) =>
         string.IsNullOrWhiteSpace(value) ? "Unknown" : value;

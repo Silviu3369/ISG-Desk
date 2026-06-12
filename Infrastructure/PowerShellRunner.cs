@@ -18,6 +18,22 @@ namespace NetScopeDiagnosticCenter.Infrastructure;
 /// </remarks>
 public sealed class PowerShellRunner : IPowerShellRunner
 {
+    /// <summary>
+    /// Windows CreateProcess caps the whole command line at ~32,767 chars and -EncodedCommand
+    /// inflates the script ~2.7× (UTF-16 → base64). Past this threshold the script is handed
+    /// to PowerShell as a temp .ps1 file instead, with comfortable headroom for the fixed args.
+    /// </summary>
+    private const int MaxEncodedCommandChars = 24_000;
+
+    /// <summary>
+    /// Windows PowerShell 5.1 writes redirected stdout in the OEM codepage (CP850/852),
+    /// which turns '·', '°', '…' and Romanian diacritics into mojibake ("ú", "ø") once
+    /// .NET reads them back. Prepended to every script so both sides agree on UTF-8,
+    /// paired with <see cref="ProcessStartInfo.StandardOutputEncoding"/> below.
+    /// </summary>
+    private const string Utf8OutputPreamble =
+        "try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }\n";
+
     private readonly ILoggingService _loggingService;
 
     public PowerShellRunner(ILoggingService loggingService)
@@ -32,7 +48,9 @@ public sealed class PowerShellRunner : IPowerShellRunner
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        var encodedCommand = Convert.ToBase64String(Encoding.Unicode.GetBytes(script));
+        var effectiveScript = Utf8OutputPreamble + script;
+        var encodedCommand = Convert.ToBase64String(Encoding.Unicode.GetBytes(effectiveScript));
+        string? tempScriptPath = null;
         using var process = new Process();
         var startInfo = new ProcessStartInfo
         {
@@ -40,18 +58,39 @@ public sealed class PowerShellRunner : IPowerShellRunner
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
-            CreateNoWindow = true
+            CreateNoWindow = true,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8
         };
         startInfo.ArgumentList.Add("-NoProfile");
         startInfo.ArgumentList.Add("-NonInteractive");
         startInfo.ArgumentList.Add("-ExecutionPolicy");
         startInfo.ArgumentList.Add("Bypass");
-        startInfo.ArgumentList.Add("-EncodedCommand");
-        startInfo.ArgumentList.Add(encodedCommand);
         process.StartInfo = startInfo;
 
         try
         {
+            if (encodedCommand.Length <= MaxEncodedCommandChars)
+            {
+                startInfo.ArgumentList.Add("-EncodedCommand");
+                startInfo.ArgumentList.Add(encodedCommand);
+            }
+            else
+            {
+                // Abandoned runs (process killed mid-collect) can leave orphan scripts behind —
+                // sweep old ones so Temp never accumulates, then write this run's file.
+                SweepStaleTempScripts();
+                // UTF-8 with BOM so Windows PowerShell 5.1 reads the file as Unicode, not ANSI.
+                tempScriptPath = Path.Combine(Path.GetTempPath(), $"isgdesk-{Guid.NewGuid():N}.ps1");
+                await File.WriteAllTextAsync(
+                    tempScriptPath,
+                    effectiveScript,
+                    new UTF8Encoding(encoderShouldEmitUTF8Identifier: true),
+                    cancellationToken).ConfigureAwait(false);
+                startInfo.ArgumentList.Add("-File");
+                startInfo.ArgumentList.Add(tempScriptPath);
+            }
+
             process.Start();
 
             var outputTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
@@ -101,6 +140,38 @@ public sealed class PowerShellRunner : IPowerShellRunner
                 Error = ex.Message
             };
         }
+        finally
+        {
+            TryDeleteTempScript(tempScriptPath);
+        }
+    }
+
+    private static void TryDeleteTempScript(string? path)
+    {
+        if (path is null) return;
+        try { File.Delete(path); }
+        catch { /* best effort — the stale-file sweep catches it on the next long run */ }
+    }
+
+    /// <summary>
+    /// Deletes isgdesk-*.ps1 temp scripts older than an hour. Files that fresh can belong to a
+    /// concurrent run, so they are left alone; anything older is an orphan from a killed process.
+    /// </summary>
+    private static void SweepStaleTempScripts()
+    {
+        try
+        {
+            var cutoff = DateTime.UtcNow.AddHours(-1);
+            foreach (var stale in Directory.GetFiles(Path.GetTempPath(), "isgdesk-*.ps1"))
+            {
+                try
+                {
+                    if (File.GetLastWriteTimeUtc(stale) < cutoff) File.Delete(stale);
+                }
+                catch { /* in use or already gone */ }
+            }
+        }
+        catch { /* temp dir unreadable — nothing to sweep */ }
     }
 
     private static void TryKill(Process process)

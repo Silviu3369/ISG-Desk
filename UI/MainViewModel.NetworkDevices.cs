@@ -72,6 +72,8 @@ public sealed partial class MainViewModel : NetworkDevicesViewModel.IHost
     public NetworkDeviceScanResult? LastNetworkDeviceScan { get => NetworkDevices.LastNetworkDeviceScan; set => NetworkDevices.LastNetworkDeviceScan = value; }
     public NetworkDeviceResult? SelectedNetworkDeviceScanResult { get => NetworkDevices.SelectedNetworkDeviceScanResult; set => NetworkDevices.SelectedNetworkDeviceScanResult = value; }
     public bool IsNetworkDeviceScanRunning => NetworkDevices.IsNetworkDeviceScanRunning;
+    public string HeadlineVerdict => NetworkDevices.HeadlineVerdict;
+    public string HeadlineSeverity => NetworkDevices.HeadlineSeverity;
 
     // === Commands ===
     public ICommand IdentifyNetworkDeviceCommand => NetworkDevices.IdentifyNetworkDeviceCommand;
@@ -83,6 +85,11 @@ public sealed partial class MainViewModel : NetworkDevicesViewModel.IHost
     public ICommand CancelNetworkDeviceScanCommand => NetworkDevices.CancelNetworkDeviceScanCommand;
     public ICommand CopyNetworkDeviceSummaryCommand => NetworkDevices.CopyNetworkDeviceSummaryCommand;
     public ICommand ForgetNetworkDeviceSnmpCredentialCommand => NetworkDevices.ForgetNetworkDeviceSnmpCredentialCommand;
+    public ICommand SaveDeviceLabelCommand => NetworkDevices.SaveDeviceLabelCommand;
+    public ICommand ClearDeviceLabelCommand => NetworkDevices.ClearDeviceLabelCommand;
+
+    /// <summary>Editable label for the selected discovered device (persisted per MAC/IP).</summary>
+    public string SelectedDeviceLabelText { get => NetworkDevices.SelectedDeviceLabelText; set => NetworkDevices.SelectedDeviceLabelText = value; }
 
     // === NetworkDevicesViewModel.IHost ===
     void NetworkDevicesViewModel.IHost.NotifyStatus(string message) => PublishStatus(ActivitySourceModule.NetworkDevices, message);

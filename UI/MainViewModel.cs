@@ -45,6 +45,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public MainViewModel(
         DiagnosticEngine diagnosticEngine,
         PortTestCollector portTestCollector,
+        TraceRouteCollector traceRouteCollector,
+        NetworkRepairService networkRepairService,
         WifiCollector wifiCollector,
         ScenarioEngine scenarioEngine,
         TargetShareDiscoveryCollector targetShareDiscoveryCollector,
@@ -65,7 +67,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         ActivityFeedService activityFeedService,
         IMonitoringSessionFactory monitoringSessionFactory,
         ISystemOverviewCollector systemOverviewCollector,
-        WifiAnalyzerViewModel wifiAnalyzer)
+        WifiAnalyzerViewModel wifiAnalyzer,
+        Collectors.Wifi.WifiDeviceFriendlyNameStore deviceLabelStore)
     {
         WifiAnalyzer = wifiAnalyzer ?? throw new ArgumentNullException(nameof(wifiAnalyzer));
         _appStorage = appStorage;
@@ -74,13 +77,31 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
         // Phase 3 — sidebar live status: 2-second interval gateway ping.
         // The session auto-starts against the detected default gateway. If detection fails
-        // we still create the session — the user can reassign target later.
+        // (no network yet) the network-change handler below starts it as soon as one appears.
         StatusMonitor = monitoringSessionFactory.Create(intervalMs: 2000, maxSamples: 60);
         var initialGateway = GatewayDetector.DetectDefaultGateway();
         if (!string.IsNullOrWhiteSpace(initialGateway))
         {
             _ = StatusMonitor.StartAsync(initialGateway);
         }
+
+        // The honest LIVE/OFF chip needs a change notification when the session flips state.
+        if (StatusMonitor is System.ComponentModel.INotifyPropertyChanged monitorNotifier)
+        {
+            monitorNotifier.PropertyChanged += (_, e) =>
+            {
+                if (e.PropertyName == nameof(IMonitoringSession.IsRunning))
+                {
+                    OnPropertyChanged(nameof(StatusMonitorOffline));
+                }
+            };
+        }
+
+        // Networks change under a helpdesk laptop constantly (dock, Wi-Fi, VPN). Re-detect
+        // the gateway after each change settles and retarget the monitor — otherwise it
+        // pings a gateway that no longer exists, or never starts when the app opened offline.
+        _gatewayRetargetTimer = new System.Threading.Timer(_ => RetargetStatusMonitorToCurrentGateway());
+        System.Net.NetworkInformation.NetworkChange.NetworkAddressChanged += OnNetworkAddressChanged;
 
         // Phase 2c migration: ActivityViewModel owns the live activity feed.
         Activity = new ActivityViewModel(activityFeedService, this);
@@ -109,10 +130,14 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             initialPrintServer: _recentTargets.LastPrintServer);
 
         // Phase 2c migration: NetworkDevicesViewModel owns SNMP identification + LAN scan state.
-        NetworkDevices = new NetworkDevicesViewModel(networkDeviceCollector, _loggingService, this, snmpCredentialStore);
+        // The label store is shared with the Wi-Fi module: label a device once, see it everywhere.
+        NetworkDevices = new NetworkDevicesViewModel(networkDeviceCollector, _loggingService, this, snmpCredentialStore, deviceLabelStore);
 
         // Phase 2d migration: DiagnosisViewModel owns Quick Diagnosis + manual port test.
         Diagnosis = new DiagnosisViewModel(diagnosticEngine, portTestCollector, healthScoreCalculator, ruleEngine, _loggingService, this);
+
+        // Repair Actions: one-click network first aid on the Diagnosis page.
+        RepairActions = new RepairActionsViewModel(networkRepairService, _loggingService, this);
 
         // Phase 2d migration: TargetedTestsViewModel owns scenario runners + targeted-test result projection.
         TargetedTests = new TargetedTestsViewModel(
@@ -126,8 +151,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             initialServiceTarget: _recentTargets.ServiceTargets.FirstOrDefault() ?? string.Empty,
             initialDomainControllerOverride: _recentTargets.DomainControllerOverride);
 
-        // Phase 2d migration: LinkQualityViewModel owns deep ping + path diagnostics.
-        LinkQuality = new LinkQualityViewModel(_loggingService, this);
+        // Phase 2d migration: LinkQualityViewModel owns deep ping + path diagnostics + manual traceroute.
+        LinkQuality = new LinkQualityViewModel(_loggingService, this, traceRouteCollector);
 
         // Technician Home: read-only local system overview + last-diagnosis summary.
         // Built last because IHost reads LastDiagnosis owned by this VM.
@@ -158,11 +183,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             }
         };
         Diagnosis.PropertyChanged += (_, e) => OnPropertyChanged(e.PropertyName);
+        RepairActions.PropertyChanged += (_, e) => OnPropertyChanged(e.PropertyName);
         TargetedTests.PropertyChanged += (_, e) => OnPropertyChanged(e.PropertyName);
         LinkQuality.PropertyChanged += (_, e) => OnPropertyChanged(e.PropertyName);
         TechnicianHome.PropertyChanged += (_, e) => OnPropertyChanged(e.PropertyName);
-        // Default landing page → load the local snapshot now (local-only, non-blocking).
-        _ = TechnicianHome.EnsureLoadedAsync();
         WifiAnalyzer.PropertyChanged += (_, e) =>
         {
             OnPropertyChanged(e.PropertyName);
@@ -186,6 +210,15 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         // are exposed as expression-bodied delegates in MainViewModel.Reports.cs.
         // ClearActivityFeedCommand delegates to ActivityViewModel below.
     }
+
+    /// <summary>
+    /// Kicks off the default landing page's local snapshot load (Technician Home).
+    /// Called once by App.OnStartup after the main window is created — deliberately
+    /// not from the constructor, so constructing the VM (e.g. in the DI composition
+    /// tests) never spawns the PowerShell-backed overview collector. Safe to call
+    /// more than once: EnsureLoadedAsync is single-load guarded.
+    /// </summary>
+    public Task StartInitialLoadAsync() => TechnicianHome.EnsureLoadedAsync();
 
     public ICommand NavigateCommand { get; }
     public ICommand CancelCurrentOperationCommand { get; }
@@ -344,8 +377,17 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         get => _lastDiagnosis;
         set
         {
+            var previous = _lastDiagnosis;
             if (SetProperty(ref _lastDiagnosis, value))
             {
+                // Keep the replaced run so the verdict card can show "previous vs now".
+                // In-place mutations (port test / link quality) reuse the same instance
+                // and deliberately do NOT rotate the comparison baseline.
+                if (previous is not null && value is not null)
+                {
+                    _previousDiagnosis = previous;
+                }
+
                 NotifyDiagnosisSurfaceChanged();
                 Reports?.NotifyDiagnosisChanged();
                 RefreshLinkQualityFromLastDiagnosis();
@@ -430,7 +472,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(DiagnosisEvidenceText));
         OnPropertyChanged(nameof(DiagnosisRecommendedActionText));
         OnPropertyChanged(nameof(SummaryText));
+        OnPropertyChanged(nameof(PreviousDiagnosisComparisonText));
+        OnPropertyChanged(nameof(HasPreviousDiagnosisComparison));
         Diagnosis?.NotifyDiagnosisContextChanged();
+        RepairActions?.NotifyDiagnosisContextChanged();
     }
 
     private static string FirstNonEmpty(IEnumerable<string>? primary, IEnumerable<string>? secondary, string fallback)
@@ -457,10 +502,70 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
 
         _disposed = true;
+        System.Net.NetworkInformation.NetworkChange.NetworkAddressChanged -= OnNetworkAddressChanged;
+        _gatewayRetargetTimer?.Dispose();
         StatusMonitor.Stop();
         if (StatusMonitor is IDisposable disposableMonitor)
         {
             disposableMonitor.Dispose();
+        }
+    }
+
+    /// <summary>True when the always-on gateway monitor is NOT sampling (drives the OFF chip).</summary>
+    public bool StatusMonitorOffline => !StatusMonitor.IsRunning;
+
+    /// <summary>Debounces network-change bursts; fires once after the change settles.</summary>
+    private readonly System.Threading.Timer _gatewayRetargetTimer;
+
+    private void OnNetworkAddressChanged(object? sender, EventArgs e)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        // Address changes arrive in bursts (DHCP, IPv6, VPN) — wait 2 s of quiet first.
+        _gatewayRetargetTimer.Change(TimeSpan.FromSeconds(2), System.Threading.Timeout.InfiniteTimeSpan);
+    }
+
+    private void RetargetStatusMonitorToCurrentGateway()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        try
+        {
+            var gateway = GatewayDetector.DetectDefaultGateway();
+            if (string.IsNullOrWhiteSpace(gateway))
+            {
+                return;
+            }
+
+            if (StatusMonitor.IsRunning &&
+                string.Equals(gateway, StatusMonitor.CurrentTarget, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            // StartAsync resets bindable state; run it on the UI thread so WPF never sees
+            // a thread-affine object from the timer thread.
+            var dispatcher = System.Windows.Application.Current?.Dispatcher;
+            if (dispatcher is null)
+            {
+                _ = StatusMonitor.StartAsync(gateway);
+            }
+            else
+            {
+                dispatcher.BeginInvoke(() => _ = StatusMonitor.StartAsync(gateway));
+            }
+
+            PublishStatus(ActivitySourceModule.Unknown, $"Live monitor retargeted to gateway {gateway} after a network change.");
+        }
+        catch
+        {
+            // A network flap must never take the app down; the next change retries.
         }
     }
 

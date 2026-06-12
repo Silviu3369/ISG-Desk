@@ -4,30 +4,30 @@
 
 .DESCRIPTION
     Produces a framework-dependent single-file portable build under
-    .\publish\ISG-Desk-2.0.0-portable\ and zips it into ISG-Desk-2.0.0-portable.zip.
+    .\publish\ISG-Desk-<version>-portable\ and zips it into ISG-Desk-<version>-portable.zip.
 
     The output is small (~5-15 MB) but requires .NET 8 Desktop Runtime on the target
     machine. To produce a fully self-contained build (~80 MB, no runtime needed),
     use -SelfContained.
 
 .PARAMETER Version
-    Version stamp. Defaults to "2.0.0".
+    Version stamp. Defaults to "1.1.0" (keep in sync with <Version> in the csproj).
 
 .PARAMETER SelfContained
     If specified, embeds the .NET runtime in the output (~80 MB ZIP, no install needed).
 
 .EXAMPLE
     .\build-release.ps1
-    Produces ISG-Desk-2.0.0-portable.zip (framework-dependent).
+    Produces ISG-Desk-1.1.0-portable.zip (framework-dependent).
 
 .EXAMPLE
     .\build-release.ps1 -SelfContained
-    Produces ISG-Desk-2.0.0-portable-selfcontained.zip (with runtime embedded).
+    Produces ISG-Desk-1.1.0-selfcontained.zip (with runtime embedded).
 #>
 
 [CmdletBinding()]
 param(
-    [string]$Version = "2.0.0",
+    [string]$Version = "1.1.0",
     [switch]$SelfContained
 )
 
@@ -66,6 +66,8 @@ $publishArgs = @(
 
 if ($SelfContained) {
     $publishArgs += '/p:SelfContained=true'
+    # Halves the on-disk exe (~160 MB -> ~85 MB) at a small first-launch cost.
+    $publishArgs += '/p:EnableCompressionInSingleFile=true'
 } else {
     $publishArgs += '/p:SelfContained=false'
 }

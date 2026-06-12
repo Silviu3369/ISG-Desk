@@ -4,7 +4,7 @@
 
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D6?logo=windows)
 ![.NET](https://img.shields.io/badge/.NET-8.0-512BD4?logo=dotnet)
-![Tests](https://img.shields.io/badge/tests-718%20passing-success)
+![Tests](https://img.shields.io/badge/tests-817%20passing-success)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
 ISG Desk consolidates the everyday network-triage tasks of a Tier 1/2 helpdesk — ping, DNS, gateway and internet checks, Wi-Fi analysis, SNMP device inspection, printer discovery, and report export — into a single application. Every diagnosis produces evidence, a confidence level, and recommended next steps so the result can be pasted straight into a support ticket.
@@ -15,11 +15,11 @@ ISG Desk consolidates the everyday network-triage tasks of a Tier 1/2 helpdesk �
 
 | Module | Description |
 |--------|-------------|
-| **Technician Home** | Read-only local snapshot: device identity, OS build, user and privileges, network, organization (domain/Entra/MDM), and security posture (Defender, Firewall, BitLocker, TPM, Secure Boot, UAC). |
-| **Diagnosis** | Quick Diagnosis (adapter, IP/DHCP, gateway, DNS, internet, PC context) with a 0–100 Health Score, a rule-based verdict, deep ping/jitter, and a manual port test. |
-| **Targeted Tests** | Guided checks for internal servers and shares, DNS/domain (DC discovery, Kerberos, LDAP), and specific services and ports. |
-| **Printers** | Local printers and spooler state, print-server queue discovery, safe subnet scan (9100/515/631), SNMP identify (toner and status), and queue install. |
-| **Network Devices** | SNMP v2c/v3 inspection of switches, access points, routers, and firewalls; IF-MIB interface statistics (utilization, errors, discards); and LAN SNMP discovery. |
+| **Technician Home** | Read-only local snapshot: device identity, OS build, user and privileges, network, organization (domain/Entra/MDM), security posture (Defender, Firewall, BitLocker, TPM, Secure Boot, UAC), and storage health (S.M.A.R.T. per physical disk plus free-space bars per volume). |
+| **Diagnosis** | Quick Diagnosis (adapter, IP/DHCP, gateway, DNS, internet, PC context) with a 0–100 Health Score, a rule-based verdict, comparison against the previous run, guided repair actions (flush DNS, renew DHCP, reset adapter), automatic traceroute on gateway/internet failures, deep ping/jitter, and a manual port test. |
+| **Targeted Tests** | Guided checks for internal servers and shares (ping, port, share access, published-share listing), DNS/domain (DC autodiscovery via SRV, Kerberos, LDAP, machine-account trust), and specific services with HTTP-aware probes. |
+| **Printers** | Local printers and spooler state, print-server autodiscovery (Active Directory), queue install with optional set-as-default, safe printer-only subnet scan (9100/515/631), and SNMP identify (toner and status). |
+| **Network Devices** | Two-tier LAN discovery (ping sweep + ARP readout, then rDNS/NetBIOS/port/SNMP enrichment) with honest device classification, persistent technician labels, plus SNMP v2c/v3 inspection and IF-MIB interface statistics (utilization, errors, discards). |
 | **Wi-Fi Analyzer** | Real WLAN-API scanning: nearby access points, signal, channels, congestion map, channel recommendation, roaming history, and a live signal and throughput monitor. |
 | **Reports** | Export HTML, TXT, and JSON reports for tickets, copy a summary to the clipboard, and generate a Windows WLAN report. |
 
@@ -35,7 +35,7 @@ ISG Desk consolidates the everyday network-triage tasks of a Tier 1/2 helpdesk �
 3. Unzip anywhere and run `ISG Desk.exe`.
    - The self-contained build bundles the .NET runtime, so nothing else needs to be installed.
    - A smaller portable build requires the [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0).
-4. Accept the UAC prompt (the application requests administrator rights; see [Requirements](#requirements)).
+4. No UAC prompt — the application runs as a standard user. Elevated checks (BitLocker, TPM, detailed S.M.A.R.T.) are one click away via **Restart as administrator** on Technician Home.
 
 ### Option B — Build from source (for developers)
 See [Building from source](#building-from-source) below.
@@ -81,7 +81,7 @@ ISG Desk runs entirely locally. It does not send any data to the cloud and opens
 - Windows 10 21H2 or later, or Windows 11
 - .NET 8 Desktop Runtime (only for the portable build; the self-contained build bundles it)
 - PowerShell 5.1 or later (ships with Windows)
-- Administrator rights at launch, requested via the application manifest and used for elevated Windows queries (security posture, printer install, some adapter operations)
+- No administrator rights required — the app launches `asInvoker` so standard users get full read-only diagnostics. A few probes (BitLocker, TPM, S.M.A.R.T. temperature/wear, printer install, some adapter repairs) need elevation, available in-app via **Restart as administrator**
 
 ---
 
@@ -98,7 +98,7 @@ dotnet build -c Release
 # Run
 dotnet run --project NetScopeDiagnosticCenter.csproj
 
-# Run the test suite (718 tests)
+# Run the test suite (817 tests)
 dotnet test
 ```
 
@@ -120,7 +120,7 @@ dotnet test
 - Serilog for logging, Lextm.SharpSnmpLib for SNMP
 - Native WLAN API (P/Invoke) for real Wi-Fi scanning
 - Hybrid data collection: .NET BCL for network probes, PowerShell for Windows management data
-- 718 unit and integration tests (xUnit and FluentAssertions)
+- 817 unit and integration tests (xUnit and FluentAssertions)
 
 The code is organized into `Collectors/` (data gathering), `Core/` (engines, models, pure logic), `Infrastructure/` (logging, storage, SNMP, WLAN), `Reports/`, and `UI/` (views and view-models).
 

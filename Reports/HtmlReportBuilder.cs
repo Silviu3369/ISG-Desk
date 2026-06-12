@@ -51,6 +51,7 @@ dt{font-weight:600;color:#334155}dd{margin:0 0 8px}li{margin-bottom:6px}code{bac
         AppendList(html, "Recommended Next Steps", result.Verdict.Recommendations);
         AppendList(html, "Health Score Penalties", result.HealthScore.Penalties);
         AppendDiagnosisSteps(html, result.Steps);
+        AppendTraceRoute(html, result.TraceRoute);
 
         if (result.LastScenario is not null)
         {
@@ -225,7 +226,7 @@ dt{font-weight:600;color:#334155}dd{margin:0 0 8px}li{margin-bottom:6px}code{bac
         }
 
         html.AppendLine("<h2>Targeted Test Target Results</h2><table style=\"width:100%;border-collapse:collapse\">");
-        html.AppendLine("<tr><th align=\"left\">Target</th><th align=\"left\">DNS</th><th align=\"left\">Ping</th><th align=\"left\">Latency</th><th align=\"left\">Loss</th><th align=\"left\">Ports</th><th align=\"left\">Verdict</th><th align=\"left\">Owner</th><th align=\"left\">Collector</th></tr>");
+        html.AppendLine("<tr><th align=\"left\">Target</th><th align=\"left\">DNS</th><th align=\"left\">Ping</th><th align=\"left\">Latency</th><th align=\"left\">Loss</th><th align=\"left\">Ports</th><th align=\"left\">Share</th><th align=\"left\">Published shares</th><th align=\"left\">Verdict</th><th align=\"left\">Owner</th><th align=\"left\">Collector</th></tr>");
         foreach (var result in results)
         {
             html.AppendLine("<tr>");
@@ -235,12 +236,41 @@ dt{font-weight:600;color:#334155}dd{margin:0 0 8px}li{margin-bottom:6px}code{bac
             html.AppendLine($"<td>{E(result.LatencyText)}</td>");
             html.AppendLine($"<td>{E(result.LossText)}</td>");
             html.AppendLine($"<td>{E(result.PortSummary)}</td>");
+            html.AppendLine($"<td>{E(result.ShareStatus)}</td>");
+            html.AppendLine($"<td>{E(result.VisibleSharesText)}</td>");
             html.AppendLine($"<td>{E(result.Verdict)}</td>");
             html.AppendLine($"<td>{E(result.OwnerSuggestion)}</td>");
             html.AppendLine($"<td>{E(result.CollectorStatus)}</td>");
             html.AppendLine("</tr>");
         }
 
+        html.AppendLine("</table>");
+    }
+
+    private static void AppendTraceRoute(StringBuilder html, TraceRouteResult? trace)
+    {
+        if (trace is null)
+        {
+            return;
+        }
+
+        html.AppendLine($"<section class=\"verdict {E(trace.Status)}\">");
+        html.AppendLine("<h2>Path (traceroute)</h2>");
+        html.AppendLine($"<p><strong>{E(trace.Summary)}</strong></p>");
+        html.AppendLine($"<p><strong>Target:</strong> {E(trace.Target)} &nbsp; <strong>Status:</strong> {E(trace.Status)} &nbsp; <strong>Reached:</strong> {(trace.ReachedTarget ? "Yes" : "No")}</p>");
+        html.AppendLine("</section>");
+
+        if (trace.Hops.Count == 0)
+        {
+            return;
+        }
+
+        html.AppendLine("<table style=\"width:100%;border-collapse:collapse\">");
+        html.AppendLine("<tr><th align=\"left\">Hop</th><th align=\"left\">Address</th><th align=\"left\">Scope</th></tr>");
+        foreach (var hop in trace.Hops)
+        {
+            html.AppendLine($"<tr><td>{hop.Hop}</td><td>{E(hop.Address)}</td><td>{E(hop.Scope)}</td></tr>");
+        }
         html.AppendLine("</table>");
     }
 
@@ -503,11 +533,11 @@ dt{font-weight:600;color:#334155}dd{margin:0 0 8px}li{margin-bottom:6px}code{bac
             return;
         }
 
-        html.AppendLine("<h3>SNMP Devices Found</h3><table style=\"width:100%;border-collapse:collapse\">");
-            html.AppendLine("<tr><th align=\"left\">Address</th><th align=\"left\">Type</th><th align=\"left\">Layer</th><th align=\"left\">Owner</th><th align=\"left\">Confidence</th><th align=\"left\">Name</th><th align=\"left\">Description</th><th align=\"left\">Ping</th><th align=\"left\">Confirmation</th><th align=\"left\">Verdict</th></tr>");
+        html.AppendLine("<h3>Devices Found</h3><table style=\"width:100%;border-collapse:collapse\">");
+            html.AppendLine("<tr><th align=\"left\">Address</th><th align=\"left\">Name</th><th align=\"left\">Type</th><th align=\"left\">Confidence</th><th align=\"left\">Vendor (MAC)</th><th align=\"left\">MAC</th><th align=\"left\">Label / location</th><th align=\"left\">SNMP location</th><th align=\"left\">Ping</th><th align=\"left\">Open ports</th><th align=\"left\">Confirmation</th></tr>");
             foreach (var device in scan.Devices)
             {
-                html.AppendLine($"<tr><td>{E(device.Address)}</td><td>{E(device.DeviceType)}</td><td>{E(device.AffectedLayer)}</td><td>{E(device.OwnerSuggestion)}</td><td>{E(device.Confidence)}</td><td>{E(device.Identity?.SysName)}</td><td>{E(device.Identity?.SysDescr)}</td><td>{E(device.PingReachable ? "Yes" : "No / blocked")}</td><td>{E(device.ConfirmationStatus)}</td><td>{E(device.Verdict)}</td></tr>");
+                html.AppendLine($"<tr><td>{E(device.Address)}</td><td>{E(device.DisplayName)}</td><td>{E(device.DeviceType)}</td><td>{E(device.ClassificationConfidence)}</td><td>{E(device.MacVendorDisplay)}</td><td>{E(device.MacAddressDisplay)}</td><td>{E(device.FriendlyLabelDisplay)}</td><td>{E(device.LocationDisplay)}</td><td>{E(device.PingReachable ? "Yes" : "No / blocked")}</td><td>{E(device.OpenPortSummary)}</td><td>{E(device.ConfirmationStatus)}</td></tr>");
             }
             html.AppendLine("</table>");
         }

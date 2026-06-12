@@ -176,6 +176,54 @@ foreach ($port in $ports) {
     }
 }
 
+# Application-layer probe for web ports: a TCP-open 443 says "socket reachable";
+# an HTTP status code says "the SERVICE answers". 401/403 still prove the app is alive.
+foreach ($portResult in $portResults) {
+    if (-not $portResult.TcpSucceeded) { continue }
+    $portNumber = [int]$portResult.Port
+    $scheme = $null
+    if ($portNumber -eq 80 -or $portNumber -eq 8080) { $scheme = 'http' }
+    elseif ($portNumber -eq 443 -or $portNumber -eq 8443) { $scheme = 'https' }
+    if ($null -eq $scheme) { continue }
+
+    $statusCode = $null
+    $httpDetail = ''
+    $previousCallback = [System.Net.ServicePointManager]::ServerCertificateValidationCallback
+    try {
+        # Internal servers commonly use self-signed certs - reachability matters here, not trust.
+        [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+        $request = [System.Net.HttpWebRequest]::Create(("{0}://{1}:{2}/" -f $scheme, $hostName, $portNumber))
+        $request.Method = 'GET'
+        $request.Timeout = 5000
+        $request.ReadWriteTimeout = 5000
+        $request.AllowAutoRedirect = $false
+        $request.UserAgent = 'ISG-Desk-Diagnostics'
+        $response = $request.GetResponse()
+        $statusCode = [int]$response.StatusCode
+        $httpDetail = "HTTP $statusCode $($response.StatusDescription)"
+        $response.Close()
+    }
+    catch [System.Net.WebException] {
+        $errorResponse = $_.Exception.Response
+        if ($errorResponse) {
+            $statusCode = [int]$errorResponse.StatusCode
+            $httpDetail = "HTTP $statusCode $($errorResponse.StatusDescription) - service is answering"
+            $errorResponse.Close()
+        } else {
+            $httpDetail = "HTTP probe failed: $($_.Exception.Message)"
+        }
+    }
+    catch {
+        $httpDetail = "HTTP probe failed: $($_.Exception.Message)"
+    }
+    finally {
+        [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $previousCallback
+    }
+
+    $portResult | Add-Member -NotePropertyName HttpStatusCode -NotePropertyValue $statusCode -Force
+    $portResult | Add-Member -NotePropertyName HttpDetails -NotePropertyValue $httpDetail -Force
+}
+
 $shareStatus = 'Not tested'
 $shareDetails = ''
 if (-not [string]::IsNullOrWhiteSpace($sharePath)) {
@@ -223,6 +271,7 @@ if (-not [string]::IsNullOrWhiteSpace($sharePath)) {
         var (data, execution) = await RunCollectorWithExecutionAsync<TargetProbeResult>(script, TimeSpan.FromSeconds(35), cancellationToken);
         if (data is not null)
         {
+            await EnrichWithShareEnumerationAsync(data, normalizedHost, cancellationToken).ConfigureAwait(false);
             return data;
         }
 
@@ -248,4 +297,41 @@ if (-not [string]::IsNullOrWhiteSpace($sharePath)) {
                 .ToList()
         };
     }
+
+    private const int MaxVisibleSharesShown = 12;
+
+    /// <summary>
+    /// For file-server targets with SMB reachable, lists the shares the server actually
+    /// publishes (NetShareEnum level 1) so the verdict can say "these shares exist"
+    /// instead of only "445 is open". Best-effort: failures degrade to a status string,
+    /// never to a probe failure.
+    /// </summary>
+    private async Task EnrichWithShareEnumerationAsync(
+        TargetProbeResult probe,
+        string normalizedHost,
+        CancellationToken cancellationToken)
+    {
+        var isFileServerTarget = string.Equals(probe.Target.Purpose, "File server", StringComparison.OrdinalIgnoreCase);
+        var smbOpen = probe.Ports.Any(port => port.Port == 445 && port.TcpSucceeded);
+        if (!isFileServerTarget || !smbOpen)
+        {
+            return;
+        }
+
+        var enumeration = await EnumerateSharesAsync(normalizedHost, cancellationToken).ConfigureAwait(false);
+        probe.ShareEnumStatus = enumeration.Status;
+        probe.ShareEnumDetails = enumeration.Detail;
+        probe.VisibleShares = enumeration.Shares
+            .Select(share => share.DisplayLabel)
+            .Take(MaxVisibleSharesShown)
+            .ToList();
+        if (enumeration.Shares.Count > MaxVisibleSharesShown)
+        {
+            probe.VisibleShares.Add($"+{enumeration.Shares.Count - MaxVisibleSharesShown} more");
+        }
+    }
+
+    /// <summary>Virtual seam so unit tests can fake share lists without touching netapi32.</summary>
+    protected virtual Task<SmbShareEnumerationResult> EnumerateSharesAsync(string host, CancellationToken cancellationToken) =>
+        SmbShareEnumerator.EnumerateAsync(host, TimeSpan.FromSeconds(8), cancellationToken);
 }

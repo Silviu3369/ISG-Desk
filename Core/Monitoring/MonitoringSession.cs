@@ -260,7 +260,11 @@ internal sealed class MonitoringSession : ObservableObject, IMonitoringSession
             Summary = MonitoringSummary.Empty;
         }
         LastSample = null;
-        SparklinePoints = new PointCollection();
+        // Frozen so StartAsync can be invoked from any thread (e.g. the network-change
+        // retarget path) without handing WPF a thread-affine Freezable.
+        var empty = new PointCollection();
+        if (empty.CanFreeze) empty.Freeze();
+        SparklinePoints = empty;
     }
 
     /// <summary>

@@ -42,8 +42,13 @@ public static class DiagnosticConstants
     /// <summary>Maximum domain names queried during DC DNS SRV discovery.</summary>
     public const int MaxDomainDiscoveryDomains = 4;
 
-    /// <summary>Well-known printer TCP ports used during network printer discovery.</summary>
-    public static IReadOnlyList<int> PrinterPorts { get; } = [9100, 515, 631, 80, 443];
+    /// <summary>
+    /// Printer-protocol TCP ports used during network printer discovery: RAW/JetDirect
+    /// 9100, LPR/LPD 515 and IPP 631. Web ports (80/443) are deliberately NOT scanned —
+    /// they made every router/NAS/camera with a web UI show up as a "possible printer".
+    /// SNMP identification confirms identity afterwards.
+    /// </summary>
+    public static IReadOnlyList<int> PrinterPorts { get; } = [9100, 515, 631];
 
     /// <summary>Well-known management TCP ports scanned during network device reachability checks.</summary>
     public static IReadOnlyList<int> ManagementPorts { get; } = [22, 23, 80, 443, 8080, 8443];

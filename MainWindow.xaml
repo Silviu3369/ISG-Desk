@@ -3,6 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:conv="clr-namespace:NetScopeDiagnosticCenter.UI.Converters"
         xmlns:controls="clr-namespace:NetScopeDiagnosticCenter.UI.Controls"
+        xmlns:behaviors="clr-namespace:NetScopeDiagnosticCenter.UI.Behaviors"
         xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
         Title="ISG Desk - IT Support &amp; Network Diagnostics"
         Icon="/Assets/logo.png"
@@ -1156,6 +1157,9 @@
             sticky header). Used by printer scan, network devices interfaces, ping results.
         -->
         <Style TargetType="DataGrid">
+            <!-- Page scroll must survive crossing a grid: bubble the wheel to the page
+                 ScrollViewer whenever this grid has nothing left to scroll itself. -->
+            <Setter Property="behaviors:ScrollWheelBubbling.Enabled" Value="True" />
             <Setter Property="Background" Value="White" />
             <Setter Property="BorderBrush" Value="#D6E3F1" />
             <Setter Property="BorderThickness" Value="1" />
@@ -1763,6 +1767,78 @@
             <Setter Property="BorderBrush" Value="#6B21A8" />
         </Style>
 
+        <LinearGradientBrush x:Key="HomeStorageToolButtonBrush" StartPoint="0,0" EndPoint="0,1">
+            <GradientStop Color="#475569" Offset="0" />
+            <GradientStop Color="#334155" Offset="1" />
+        </LinearGradientBrush>
+        <LinearGradientBrush x:Key="HomeStorageToolButtonHoverBrush" StartPoint="0,0" EndPoint="0,1">
+            <GradientStop Color="#64748B" Offset="0" />
+            <GradientStop Color="#475569" Offset="1" />
+        </LinearGradientBrush>
+
+        <Style x:Key="HomeStorageToolButton" TargetType="Button" BasedOn="{StaticResource HomeToolButton}">
+            <Setter Property="Background" Value="{StaticResource HomeStorageToolButtonBrush}" />
+            <Setter Property="Tag" Value="{StaticResource HomeStorageToolButtonHoverBrush}" />
+            <Setter Property="BorderBrush" Value="#1E293B" />
+        </Style>
+
+        <LinearGradientBrush x:Key="HomeTaskToolButtonBrush" StartPoint="0,0" EndPoint="0,1">
+            <GradientStop Color="#6366F1" Offset="0" />
+            <GradientStop Color="#4F46E5" Offset="1" />
+        </LinearGradientBrush>
+        <LinearGradientBrush x:Key="HomeTaskToolButtonHoverBrush" StartPoint="0,0" EndPoint="0,1">
+            <GradientStop Color="#818CF8" Offset="0" />
+            <GradientStop Color="#6366F1" Offset="1" />
+        </LinearGradientBrush>
+
+        <Style x:Key="HomeTaskToolButton" TargetType="Button" BasedOn="{StaticResource HomeToolButton}">
+            <Setter Property="Background" Value="{StaticResource HomeTaskToolButtonBrush}" />
+            <Setter Property="Tag" Value="{StaticResource HomeTaskToolButtonHoverBrush}" />
+            <Setter Property="BorderBrush" Value="#4338CA" />
+        </Style>
+
+        <!-- Slim usage bar for volume rows on Technician Home. PART_Track / PART_Indicator are
+             the named parts ProgressBar requires to size the filled portion automatically;
+             Foreground carries the severity colour from StatusBrush. -->
+        <Style x:Key="VolumeUsageBar" TargetType="ProgressBar">
+            <Setter Property="Height" Value="8" />
+            <Setter Property="Maximum" Value="100" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Background" Value="#E8EDF5" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ProgressBar">
+                        <Grid>
+                            <Border x:Name="PART_Track" Background="{TemplateBinding Background}" CornerRadius="4" />
+                            <Border x:Name="PART_Indicator" Background="{TemplateBinding Foreground}" CornerRadius="4"
+                                    HorizontalAlignment="Left" />
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Compact in-tile action: relaunch elevated. Amber = "action recommended",
+             matching the Warning severity the tile shows when the app is not elevated. -->
+        <LinearGradientBrush x:Key="HomeElevateButtonBrush" StartPoint="0,0" EndPoint="0,1">
+            <GradientStop Color="#F59E0B" Offset="0" />
+            <GradientStop Color="#D97706" Offset="1" />
+        </LinearGradientBrush>
+        <LinearGradientBrush x:Key="HomeElevateButtonHoverBrush" StartPoint="0,0" EndPoint="0,1">
+            <GradientStop Color="#FBBF24" Offset="0" />
+            <GradientStop Color="#F59E0B" Offset="1" />
+        </LinearGradientBrush>
+
+        <Style x:Key="HomeElevateButton" TargetType="Button" BasedOn="{StaticResource PrimaryButton}">
+            <Setter Property="Background" Value="{StaticResource HomeElevateButtonBrush}" />
+            <Setter Property="Tag" Value="{StaticResource HomeElevateButtonHoverBrush}" />
+            <Setter Property="BorderBrush" Value="#B45309" />
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="FontSize" Value="11.5" />
+            <Setter Property="Padding" Value="9,5" />
+            <Setter Property="MinHeight" Value="0" />
+        </Style>
+
         <!-- Custom-chrome window control buttons — each is a separate 3D pill (rounded
              rectangle with subtle gradient, border and drop shadow) so they read as proper
              buttons rather than a flat strip. The icons use Segoe MDL2 Assets which ships
@@ -2204,11 +2280,24 @@
                                 <TextBlock Text="LIVE MONITOR" Foreground="#CBD5E1" FontSize="10" FontWeight="Bold"
                                            VerticalAlignment="Center" />
                             </StackPanel>
+                            <!-- Honest state chip: green LIVE only while the monitor samples; gray OFF otherwise. -->
                             <Border Grid.Column="1" Background="#10271C" CornerRadius="4" Padding="6,2"
-                                    VerticalAlignment="Center">
+                                    VerticalAlignment="Center"
+                                    Visibility="{Binding StatusMonitor.IsRunning, Converter={StaticResource BoolVisibility}}"
+                                    ToolTip="Gateway monitor is sampling every 2 seconds">
                                 <StackPanel Orientation="Horizontal">
                                     <Ellipse Width="5" Height="5" Fill="#22C55E" VerticalAlignment="Center" />
                                     <TextBlock Text="LIVE" Foreground="#4ADE80" FontSize="9" FontWeight="Bold"
+                                               Margin="5,0,0,0" VerticalAlignment="Center" />
+                                </StackPanel>
+                            </Border>
+                            <Border Grid.Column="1" Background="#1B2335" CornerRadius="4" Padding="6,2"
+                                    VerticalAlignment="Center"
+                                    Visibility="{Binding StatusMonitorOffline, Converter={StaticResource BoolVisibility}}"
+                                    ToolTip="Monitor idle - no default gateway detected yet. It starts automatically when a network appears.">
+                                <StackPanel Orientation="Horizontal">
+                                    <Ellipse Width="5" Height="5" Fill="#64748B" VerticalAlignment="Center" />
+                                    <TextBlock Text="OFF" Foreground="#94A3B8" FontSize="9" FontWeight="Bold"
                                                Margin="5,0,0,0" VerticalAlignment="Center" />
                                 </StackPanel>
                             </Border>
@@ -2233,15 +2322,17 @@
                                        Foreground="#94A3B8" FontSize="11" VerticalAlignment="Center"
                                        TextTrimming="CharacterEllipsis" MaxWidth="110" />
                         </Grid>
-                        <!-- Latency + loss -->
-                        <TextBlock Foreground="#D6E3F1" FontSize="11.5" Margin="0,0,0,6">
+                        <!-- Latency + loss. LossDisplay says "waiting for samples" until data exists. -->
+                        <TextBlock Foreground="#D6E3F1" FontSize="11.5" Margin="0,0,0,6"
+                                   ToolTip="{Binding StatusMonitor.Summary.TooltipText}">
                             <Run Text="{Binding StatusMonitor.LastLatencyMs, Mode=OneWay, StringFormat={}{0:N0} ms, FallbackValue=- ms, TargetNullValue=- ms}" FontWeight="SemiBold" />
                             <Run Text="  -  " Foreground="#475569" />
-                            <Run Text="{Binding StatusMonitor.Summary.LossPercent, Mode=OneWay, StringFormat=loss {0:N0}%, FallbackValue=loss 0%}" Foreground="#94A3B8" />
+                            <Run Text="{Binding StatusMonitor.Summary.LossDisplay, Mode=OneWay, FallbackValue=waiting for samples}" Foreground="#94A3B8" />
                         </TextBlock>
                         <!-- Sparkline: full-width inside padding, with subtle inner border -->
                         <Border Background="#0A1424" BorderBrush="#1E2D45" BorderThickness="1"
-                                CornerRadius="4" Height="28" HorizontalAlignment="Stretch">
+                                CornerRadius="4" Height="28" HorizontalAlignment="Stretch"
+                                ToolTip="{Binding StatusMonitor.Summary.TooltipText}">
                             <Canvas ClipToBounds="True">
                                 <Polyline Points="{Binding StatusMonitor.SparklinePoints}"
                                           Stroke="#3B82F6"
@@ -2303,7 +2394,8 @@
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto" MaxWidth="390" />
                         <ColumnDefinition Width="*" MinWidth="170" />
-                        <ColumnDefinition Width="Auto" MaxWidth="170" />
+                        <!-- 260 = badge chrome (~45) + the longest "Last check: Critical - 40/100" text. -->
+                        <ColumnDefinition Width="Auto" MaxWidth="260" />
                         <ColumnDefinition Width="58" />
                     </Grid.ColumnDefinitions>
 
@@ -2395,8 +2487,10 @@
                                 <StackPanel Orientation="Horizontal">
                                     <Ellipse Width="9" Height="9" VerticalAlignment="Center"
                                              Fill="{Binding LastDiagnosis.Verdict.Severity, Converter={StaticResource StatusBrush}}" />
+                                    <!-- 210 fits the longest real value ("Last check: Critical - 40/100");
+                                         trimming stays only as a guard for unexpected strings. -->
                                     <TextBlock VerticalAlignment="Center" Margin="9,0,0,0" FontSize="12.5" FontWeight="SemiBold"
-                                               MaxWidth="135" TextTrimming="CharacterEllipsis">
+                                               MaxWidth="210" TextTrimming="CharacterEllipsis">
                                         <Run Text="Last check:" Foreground="#64748B" FontWeight="Normal" />
                                         <Run Text="{Binding LastDiagnosis.HealthScore.Status, Mode=OneWay}"
                                              Foreground="{Binding LastDiagnosis.Verdict.Severity, Converter={StaticResource StatusBrush}}" />
@@ -2480,7 +2574,7 @@
                                     </Border>
                                     <StackPanel Grid.Column="1" Margin="16,0,0,0" VerticalAlignment="Center">
                                         <TextBlock Style="{StaticResource ModuleHeroTitle}" Text="Technician Home" />
-                                        <TextBlock Style="{StaticResource ModuleHeroSubtitle}" Text="Read-only local system overview — identity, network, organization and security posture. No scans run here." />
+                                        <TextBlock Style="{StaticResource ModuleHeroSubtitle}" Text="Read-only local system overview — identity, network, organization, security and storage health. No scans run here." />
                                     </StackPanel>
                                     <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" Margin="18,0,0,0">
                                         <Button Style="{StaticResource HomeRefreshButton}" Command="{Binding TechnicianHome.RefreshCommand}" Margin="0,0,8,0">
@@ -2525,6 +2619,19 @@
                                             <Ellipse Grid.Column="1" Width="9" Height="9" Fill="{Binding TechnicianHome.PrivilegeSeverity, Converter={StaticResource StatusBrush}}" />
                                         </Grid>
                                         <TextBlock Style="{StaticResource HomeStatusValue}" Text="{Binding TechnicianHome.PrivilegeSummary}" />
+                                        <Button Style="{StaticResource HomeElevateButton}"
+                                                Command="{Binding TechnicianHome.RestartAsAdminCommand}"
+                                                Visibility="{Binding TechnicianHome.ShowRestartAsAdmin, Converter={StaticResource BoolVisibility}}"
+                                                HorizontalAlignment="Left" Margin="0,9,0,0">
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBlock FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Text="&#xE83D;" FontSize="11" Margin="0,0,6,0" VerticalAlignment="Center" />
+                                                <TextBlock Text="Restart as administrator" />
+                                            </StackPanel>
+                                            <Button.ToolTip>
+                                                <TextBlock MaxWidth="320" TextWrapping="Wrap"
+                                                           Text="Relaunch ISG Desk elevated (UAC prompt). Unlocks BitLocker, TPM and disk S.M.A.R.T. details that need administrator rights." />
+                                            </Button.ToolTip>
+                                        </Button>
                                     </StackPanel>
                                 </Border>
 
@@ -2555,6 +2662,21 @@
                                             <Ellipse Grid.Column="1" Width="9" Height="9" Fill="{Binding TechnicianHome.SecurityPostureSeverity, Converter={StaticResource StatusBrush}}" />
                                         </Grid>
                                         <TextBlock Style="{StaticResource HomeStatusValue}" Text="{Binding TechnicianHome.SecuritySummary}" />
+                                    </StackPanel>
+                                </Border>
+
+                                <Border Style="{StaticResource HomeStatusTile}"
+                                        BorderBrush="{Binding TechnicianHome.StorageSeverity, Converter={StaticResource StatusBrush}}">
+                                    <StackPanel>
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Style="{StaticResource HomeStatusLabel}" Text="STORAGE HEALTH" />
+                                            <Ellipse Grid.Column="1" Width="9" Height="9" Fill="{Binding TechnicianHome.StorageSeverity, Converter={StaticResource StatusBrush}}" />
+                                        </Grid>
+                                        <TextBlock Style="{StaticResource HomeStatusValue}" Text="{Binding TechnicianHome.StorageSummary}" />
                                     </StackPanel>
                                 </Border>
 
@@ -2612,6 +2734,18 @@
                                             <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
                                                 <TextBlock FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Text="&#xE946;" FontSize="15" Foreground="White" Margin="0,0,8,0" VerticalAlignment="Center" />
                                                 <TextBlock Text="System About" FontWeight="SemiBold" Foreground="White" />
+                                            </StackPanel>
+                                        </Button>
+                                        <Button Style="{StaticResource HomeStorageToolButton}" Command="{Binding TechnicianHome.OpenDiskManagementCommand}">
+                                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                                <TextBlock FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Text="&#xEDA2;" FontSize="15" Foreground="White" Margin="0,0,8,0" VerticalAlignment="Center" />
+                                                <TextBlock Text="Disk Management" FontWeight="SemiBold" Foreground="White" />
+                                            </StackPanel>
+                                        </Button>
+                                        <Button Style="{StaticResource HomeTaskToolButton}" Command="{Binding TechnicianHome.OpenTaskManagerCommand}">
+                                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                                <TextBlock FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Text="&#xEC4A;" FontSize="15" Foreground="White" Margin="0,0,8,0" VerticalAlignment="Center" />
+                                                <TextBlock Text="Task Manager" FontWeight="SemiBold" Foreground="White" />
                                             </StackPanel>
                                         </Button>
                                     </WrapPanel>
@@ -2674,6 +2808,99 @@
                             <Border Style="{StaticResource Card}" Background="#FFFBEB" BorderBrush="#FCD34D" BorderThickness="1"
                                     Visibility="{Binding TechnicianHome.HasCollectorNote, Converter={StaticResource BoolVisibility}}">
                                 <TextBlock Text="{Binding TechnicianHome.CollectorNote}" Foreground="#92400E" FontSize="12" TextWrapping="Wrap" />
+                            </Border>
+
+                            <!-- ============ Storage & Disk Health (S.M.A.R.T.) ============
+                                 Disk rows come from MSFT_PhysicalDisk via the heavy collector
+                                 (health works for standard users; temperature / wear need admin).
+                                 Volume bars come from the fast tier (DriveInfo) so they always render. -->
+                            <Border Style="{StaticResource Card}">
+                                <StackPanel>
+                                    <StackPanel Style="{StaticResource HomeSectionHeaderRow}">
+                                        <Border Style="{StaticResource HomeSectionIconBadge}" Background="#0E7490">
+                                            <TextBlock Style="{StaticResource HomeSectionIcon}" Text="&#xEDA2;" />
+                                        </Border>
+                                        <TextBlock Style="{StaticResource HomeSectionTitle}" Text="Storage &amp; Disk Health" />
+                                        <Border CornerRadius="8" Padding="8,3" Margin="10,0,0,0" Background="#ECFEFF" BorderBrush="#A5F3FC" BorderThickness="1" VerticalAlignment="Center">
+                                            <TextBlock Text="S.M.A.R.T." Foreground="#155E75" FontSize="10.5" FontWeight="SemiBold" />
+                                        </Border>
+                                    </StackPanel>
+
+                                    <!-- Physical disks -->
+                                    <ItemsControl ItemsSource="{Binding TechnicianHome.Disks}"
+                                                  Visibility="{Binding TechnicianHome.HasDisks, Converter={StaticResource BoolVisibility}}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Border Background="#F8FAFC" BorderBrush="#E2E8F0" BorderThickness="1"
+                                                        CornerRadius="8" Padding="14,11" Margin="0,0,0,8">
+                                                    <Grid>
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="Auto" />
+                                                            <ColumnDefinition Width="*" />
+                                                            <ColumnDefinition Width="Auto" />
+                                                        </Grid.ColumnDefinitions>
+                                                        <Ellipse Grid.Column="0" Width="10" Height="10" VerticalAlignment="Top" Margin="0,5,11,0"
+                                                                 Fill="{Binding Severity, Converter={StaticResource StatusBrush}}" />
+                                                        <StackPanel Grid.Column="1">
+                                                            <TextBlock Text="{Binding Model}" FontWeight="SemiBold" Foreground="#0F172A" FontSize="13.5" TextWrapping="Wrap" />
+                                                            <TextBlock Text="{Binding TypeLine}" Foreground="#64748B" FontSize="12" Margin="0,3,0,0" TextWrapping="Wrap" />
+                                                            <TextBlock Text="{Binding SmartDetail}" Foreground="#94A3B8" FontSize="11.5" Margin="0,3,0,0" TextWrapping="Wrap" />
+                                                        </StackPanel>
+                                                        <Border Grid.Column="2" CornerRadius="9" Padding="11,5" VerticalAlignment="Top" Margin="12,0,0,0"
+                                                                Background="{Binding Severity, Converter={StaticResource StatusBackgroundBrush}}">
+                                                            <TextBlock FontWeight="SemiBold" FontSize="12"
+                                                                       Foreground="{Binding Severity, Converter={StaticResource StatusBrush}}"
+                                                                       Text="{Binding HealthDisplay}" />
+                                                        </Border>
+                                                    </Grid>
+                                                </Border>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+
+                                    <!-- No-disk-details state (PowerShell tier failed or still loading) -->
+                                    <Border Background="#F8FAFC" BorderBrush="#E2E8F0" BorderThickness="1" CornerRadius="8" Padding="14,12"
+                                            Visibility="{Binding TechnicianHome.NoDisks, Converter={StaticResource BoolVisibility}}">
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="&#xEDA2;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Foreground="#94A3B8" FontSize="15" VerticalAlignment="Center" />
+                                            <TextBlock Text="Physical-disk details not loaded yet — press Refresh. If this persists, the Storage module is unavailable on this PC."
+                                                       Foreground="#64748B" FontSize="12" Margin="10,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap" />
+                                        </StackPanel>
+                                    </Border>
+
+                                    <!-- Volumes with usage bars -->
+                                    <TextBlock Style="{StaticResource LabelText}" Text="Volumes (free space)" Margin="0,12,0,6"
+                                               Visibility="{Binding TechnicianHome.HasVolumes, Converter={StaticResource BoolVisibility}}" />
+                                    <ItemsControl ItemsSource="{Binding TechnicianHome.Volumes}"
+                                                  Visibility="{Binding TechnicianHome.HasVolumes, Converter={StaticResource BoolVisibility}}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Grid Margin="0,0,0,10">
+                                                    <Grid.RowDefinitions>
+                                                        <RowDefinition Height="Auto" />
+                                                        <RowDefinition Height="Auto" />
+                                                    </Grid.RowDefinitions>
+                                                    <Grid Grid.Row="0" Margin="0,0,0,4">
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="*" />
+                                                            <ColumnDefinition Width="Auto" />
+                                                        </Grid.ColumnDefinitions>
+                                                        <TextBlock Grid.Column="0" FontSize="12.5" TextWrapping="Wrap">
+                                                            <Run Text="{Binding DriveLetter, Mode=OneWay}" FontWeight="SemiBold" Foreground="#0F172A" />
+                                                            <Run Text="{Binding Label, Mode=OneWay}" Foreground="#475569" />
+                                                            <Run Text="·" Foreground="#CBD5E1" />
+                                                            <Run Text="{Binding FileSystem, Mode=OneWay}" Foreground="#94A3B8" />
+                                                        </TextBlock>
+                                                        <TextBlock Grid.Column="1" Text="{Binding UsageText}" Foreground="#64748B" FontSize="11.5" Margin="10,0,0,0" />
+                                                    </Grid>
+                                                    <ProgressBar Grid.Row="1" Style="{StaticResource VolumeUsageBar}"
+                                                                 Value="{Binding UsedPercent, Mode=OneWay}"
+                                                                 Foreground="{Binding Severity, Converter={StaticResource StatusBrush}}" />
+                                                </Grid>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </StackPanel>
                             </Border>
 
                             <!-- ============ 2–6. Detail cards ============ -->
@@ -2745,11 +2972,7 @@
                                             <TextBlock Style="{StaticResource HomeSectionTitle}" Text="Network Snapshot" />
                                         </StackPanel>
                                         <TextBlock Style="{StaticResource LabelText}" Text="Adapter / type" />
-                                        <TextBlock Style="{StaticResource ValueText}">
-                                            <Run Text="{Binding TechnicianHome.Network.AdapterName, Mode=OneWay}" />
-                                            <Run Text="·" Foreground="#94A3B8" />
-                                            <Run Text="{Binding TechnicianHome.Network.ConnectionType, Mode=OneWay}" />
-                                        </TextBlock>
+                                        <TextBlock Style="{StaticResource ValueText}" Text="{Binding TechnicianHome.Network.AdapterDisplay}" TextWrapping="Wrap" />
                                         <TextBlock Style="{StaticResource LabelText}" Text="IPv4 / subnet" Margin="0,8,0,3" />
                                         <TextBlock Style="{StaticResource ValueText}">
                                             <Run Text="{Binding TechnicianHome.Network.Ipv4Address, Mode=OneWay}" />
@@ -2824,56 +3047,98 @@
                                             <TextBlock Style="{StaticResource HomeSectionTitle}" Text="Security Snapshot" />
                                         </StackPanel>
 
-                                        <StackPanel Orientation="Horizontal" Margin="0,0,0,3">
+                                        <!-- Each label row carries a helpdesk tooltip: what the control is and
+                                             what to do when its dot is amber/red. Cursor=Help hints hoverability. -->
+                                        <StackPanel Orientation="Horizontal" Margin="0,0,0,3" Cursor="Help" Background="Transparent"
+                                                    ToolTipService.ShowDuration="30000">
+                                            <StackPanel.ToolTip>
+                                                <TextBlock MaxWidth="340" TextWrapping="Wrap"
+                                                           Text="Built-in antivirus. Healthy = 'AV on, real-time on'. If real-time protection is OFF the PC is unprotected — turn it on in Windows Security, or check whether a third-party antivirus has taken over." />
+                                            </StackPanel.ToolTip>
                                             <Ellipse Width="9" Height="9" VerticalAlignment="Center"
                                                      Fill="{Binding TechnicianHome.DefenderSeverity, Converter={StaticResource StatusBrush}}" />
                                             <TextBlock Style="{StaticResource LabelText}" Text="Windows Defender" Margin="8,0,0,0" />
                                         </StackPanel>
                                         <TextBlock Style="{StaticResource ValueText}" Text="{Binding TechnicianHome.Security.DefenderStatus}" TextWrapping="Wrap" />
 
-                                        <StackPanel Orientation="Horizontal" Margin="0,8,0,3">
+                                        <StackPanel Orientation="Horizontal" Margin="0,8,0,3" Cursor="Help" Background="Transparent"
+                                                    ToolTipService.ShowDuration="30000">
+                                            <StackPanel.ToolTip>
+                                                <TextBlock MaxWidth="340" TextWrapping="Wrap"
+                                                           Text="Windows Firewall state per network profile (Domain / Private / Public). All profiles should be On — an OFF profile leaves the PC exposed on that network type." />
+                                            </StackPanel.ToolTip>
                                             <Ellipse Width="9" Height="9" VerticalAlignment="Center"
                                                      Fill="{Binding TechnicianHome.FirewallSeverity, Converter={StaticResource StatusBrush}}" />
                                             <TextBlock Style="{StaticResource LabelText}" Text="Firewall" Margin="8,0,0,0" />
                                         </StackPanel>
                                         <TextBlock Style="{StaticResource ValueText}" Text="{Binding TechnicianHome.Security.FirewallStatus}" TextWrapping="Wrap" />
 
-                                        <StackPanel Orientation="Horizontal" Margin="0,8,0,3">
+                                        <StackPanel Orientation="Horizontal" Margin="0,8,0,3" Cursor="Help" Background="Transparent"
+                                                    ToolTipService.ShowDuration="30000">
+                                            <StackPanel.ToolTip>
+                                                <TextBlock MaxWidth="340" TextWrapping="Wrap"
+                                                           Text="Drive encryption for the Windows drive. 'FullyEncrypted (On)' protects data if the device is lost or stolen; 'Decrypted / Off' means the disk can be read if removed. Reading this status requires administrator rights." />
+                                            </StackPanel.ToolTip>
                                             <Ellipse Width="9" Height="9" VerticalAlignment="Center"
                                                      Fill="{Binding TechnicianHome.BitLockerSeverity, Converter={StaticResource StatusBrush}}" />
                                             <TextBlock Style="{StaticResource LabelText}" Text="BitLocker (system drive)" Margin="8,0,0,0" />
                                         </StackPanel>
                                         <TextBlock Style="{StaticResource ValueText}" Text="{Binding TechnicianHome.Security.BitLockerStatus}" />
 
-                                        <StackPanel Orientation="Horizontal" Margin="0,8,0,3">
+                                        <StackPanel Orientation="Horizontal" Margin="0,8,0,3" Cursor="Help" Background="Transparent"
+                                                    ToolTipService.ShowDuration="30000">
+                                            <StackPanel.ToolTip>
+                                                <TextBlock MaxWidth="340" TextWrapping="Wrap"
+                                                           Text="User Account Control — prompts before apps make system-level changes. DISABLED means software can modify the system silently; re-enable it from User Account Control settings." />
+                                            </StackPanel.ToolTip>
                                             <Ellipse Width="9" Height="9" VerticalAlignment="Center"
                                                      Fill="{Binding TechnicianHome.UacSeverity, Converter={StaticResource StatusBrush}}" />
                                             <TextBlock Style="{StaticResource LabelText}" Text="UAC" Margin="8,0,0,0" />
                                         </StackPanel>
                                         <TextBlock Style="{StaticResource ValueText}" Text="{Binding TechnicianHome.Security.UacStatus}" />
 
-                                        <StackPanel Orientation="Horizontal" Margin="0,8,0,3">
+                                        <StackPanel Orientation="Horizontal" Margin="0,8,0,3" Cursor="Help" Background="Transparent"
+                                                    ToolTipService.ShowDuration="30000">
+                                            <StackPanel.ToolTip>
+                                                <TextBlock MaxWidth="340" TextWrapping="Wrap"
+                                                           Text="UEFI protection that blocks unsigned boot code (rootkits). Disabled weakens boot security — enable it in the UEFI/BIOS firmware settings. Shows Unknown on legacy BIOS or without administrator rights." />
+                                            </StackPanel.ToolTip>
                                             <Ellipse Width="9" Height="9" VerticalAlignment="Center"
                                                      Fill="{Binding TechnicianHome.SecureBootSeverity, Converter={StaticResource StatusBrush}}" />
                                             <TextBlock Style="{StaticResource LabelText}" Text="Secure Boot" Margin="8,0,0,0" />
                                         </StackPanel>
                                         <TextBlock Style="{StaticResource ValueText}" Text="{Binding TechnicianHome.Security.SecureBoot}" />
 
-                                        <StackPanel Orientation="Horizontal" Margin="0,8,0,3">
+                                        <StackPanel Orientation="Horizontal" Margin="0,8,0,3" Cursor="Help" Background="Transparent"
+                                                    ToolTipService.ShowDuration="30000">
+                                            <StackPanel.ToolTip>
+                                                <TextBlock MaxWidth="340" TextWrapping="Wrap"
+                                                           Text="Trusted Platform Module — the hardware key store used by BitLocker and Windows Hello. Healthy = 'Present, ready'. Reading this status requires administrator rights." />
+                                            </StackPanel.ToolTip>
                                             <Ellipse Width="9" Height="9" VerticalAlignment="Center"
                                                      Fill="{Binding TechnicianHome.TpmSeverity, Converter={StaticResource StatusBrush}}" />
                                             <TextBlock Style="{StaticResource LabelText}" Text="TPM" Margin="8,0,0,0" />
                                         </StackPanel>
                                         <TextBlock Style="{StaticResource ValueText}" Text="{Binding TechnicianHome.Security.TpmStatus}" />
 
-                                        <StackPanel Orientation="Horizontal" Margin="0,8,0,3">
+                                        <StackPanel Orientation="Horizontal" Margin="0,8,0,3" Cursor="Help" Background="Transparent"
+                                                    ToolTipService.ShowDuration="30000">
+                                            <StackPanel.ToolTip>
+                                                <TextBlock MaxWidth="340" TextWrapping="Wrap"
+                                                           Text="Windows has updates or file operations waiting for a restart. A pending reboot can block installs and policy updates from finishing — restart the PC when possible." />
+                                            </StackPanel.ToolTip>
                                             <Ellipse Width="9" Height="9" VerticalAlignment="Center"
                                                      Fill="{Binding TechnicianHome.PendingRebootSeverity, Converter={StaticResource StatusBrush}}" />
                                             <TextBlock Style="{StaticResource LabelText}" Text="Pending reboot" Margin="8,0,0,0" />
                                         </StackPanel>
                                         <TextBlock Style="{StaticResource ValueText}" Text="{Binding TechnicianHome.Security.PendingReboot}" />
 
-                                        <StackPanel Orientation="Horizontal" Margin="0,8,0,3">
+                                        <StackPanel Orientation="Horizontal" Margin="0,8,0,3" Cursor="Help" Background="Transparent"
+                                                    ToolTipService.ShowDuration="30000">
+                                            <StackPanel.ToolTip>
+                                                <TextBlock MaxWidth="340" TextWrapping="Wrap"
+                                                           Text="License state of this Windows copy. 'Activated' is healthy. 'Unlicensed / Notification' shows a desktop watermark and limits settings — verify the product key or escalate to licensing." />
+                                            </StackPanel.ToolTip>
                                             <Ellipse Width="9" Height="9" VerticalAlignment="Center"
                                                      Fill="{Binding TechnicianHome.WindowsActivationSeverity, Converter={StaticResource StatusBrush}}" />
                                             <TextBlock Style="{StaticResource LabelText}" Text="Windows activation" Margin="8,0,0,0" />
@@ -3021,7 +3286,7 @@
                                     </Border>
                                     <StackPanel Grid.Column="1" Margin="16,0,0,0" VerticalAlignment="Center">
                                         <TextBlock Style="{StaticResource ModuleHeroTitle}" Text="Diagnosis" />
-                                        <TextBlock Style="{StaticResource ModuleHeroSubtitle}" Text="Quick baseline + bounded ping path tests + manual TCP port test on the same target. Expand a section below to run focused checks." />
+                                        <TextBlock Style="{StaticResource ModuleHeroSubtitle}" Text="Quick baseline + bounded ping/traceroute path tests + manual TCP port test + one-click repair actions. Expand a section below to run focused checks." />
                                     </StackPanel>
                                 </Grid>
                             </Border>
@@ -3081,6 +3346,10 @@
                                                                Text="{Binding LastDiagnosis.CreatedAt, StringFormat=Ran: {0:HH:mm:ss}, TargetNullValue=Not run yet, FallbackValue=Not run yet}" />
                                                 </Border>
                                             </WrapPanel>
+                                            <!-- Session trend: how this run compares with the one it replaced. -->
+                                            <TextBlock Text="{Binding PreviousDiagnosisComparisonText}"
+                                                       Foreground="#64748B" FontSize="12" Margin="0,4,0,0" TextWrapping="Wrap"
+                                                       Visibility="{Binding HasPreviousDiagnosisComparison, Converter={StaticResource BoolVisibility}}" />
                                         </StackPanel>
 
                                         <StackPanel Grid.Column="2" VerticalAlignment="Center" Width="180">
@@ -3870,6 +4139,57 @@
                                     </StackPanel>
                                 </Border>
 
+                                <!-- Manual traceroute: shows WHERE the path breaks (local vs ISP) on demand,
+                                     not only when Quick Diagnosis detects an outage. -->
+                                <Border Style="{StaticResource Card}"
+                                        BorderBrush="{Binding LastTraceRoute.Status, Converter={StaticResource StatusBrush}, FallbackValue=#E2EAF6}"
+                                        BorderThickness="5,1,1,1">
+                                    <StackPanel>
+                                        <Grid Margin="0,0,0,10">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Grid.Column="0" Text="Trace Route (hop-by-hop path)" FontWeight="SemiBold" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Column="1" Text="{Binding TraceRouteHopCountText}" Foreground="#94A3B8" FontSize="11" VerticalAlignment="Center" Margin="0,0,12,0" />
+                                            <Button Grid.Column="2" Style="{StaticResource PrimaryButtonDiagnosis}" Command="{Binding RunTraceRouteCommand}"
+                                                    ToolTip="Bounded traceroute (max 15 hops) to the target above — empty target uses the internet beacon. Shows whether a break is on the LOCAL side or at the ISP.">
+                                                <StackPanel Orientation="Horizontal">
+                                                    <TextBlock FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Text="{Binding TraceRouteButtonIcon}" FontSize="13" Margin="0,0,7,0" VerticalAlignment="Center" />
+                                                    <TextBlock Text="{Binding TraceRouteButtonText}" />
+                                                </StackPanel>
+                                            </Button>
+                                        </Grid>
+                                        <Border Background="#F2F7FD" BorderBrush="#BFCFE5" BorderThickness="1" CornerRadius="6" Padding="12"
+                                                Visibility="{Binding NoTraceRoute, Converter={StaticResource BoolVisibility}}">
+                                            <TextBlock Text="No traceroute yet. Uses the Ping Latency target above (or the internet beacon when empty) and labels each hop as local or ISP/internet."
+                                                       Foreground="#475569" TextWrapping="Wrap" />
+                                        </Border>
+                                        <StackPanel Visibility="{Binding HasTraceRoute, Converter={StaticResource BoolVisibility}}">
+                                            <TextBlock Text="{Binding LastTraceRoute.Summary}" FontWeight="SemiBold" Foreground="#17212B" TextWrapping="Wrap" Margin="0,0,0,8" />
+                                            <ItemsControl ItemsSource="{Binding LastTraceRoute.Hops}">
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <Border Background="#F8FAFC" BorderBrush="#E2E8F0" BorderThickness="1" CornerRadius="6" Padding="10,6" Margin="0,0,0,5">
+                                                            <Grid>
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="44" />
+                                                                    <ColumnDefinition Width="*" />
+                                                                    <ColumnDefinition Width="Auto" />
+                                                                </Grid.ColumnDefinitions>
+                                                                <TextBlock Grid.Column="0" Text="{Binding Hop, StringFormat=#{0}}" FontWeight="SemiBold" Foreground="#475569" />
+                                                                <TextBlock Grid.Column="1" Text="{Binding Address}" Foreground="#0F172A" FontWeight="SemiBold" />
+                                                                <TextBlock Grid.Column="2" Text="{Binding Scope}" Foreground="#64748B" FontSize="11.5" VerticalAlignment="Center" />
+                                                            </Grid>
+                                                        </Border>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                        </StackPanel>
+                                    </StackPanel>
+                                </Border>
+
                                 <UniformGrid Columns="2">
                                     <Border Style="{StaticResource Card}">
                                         <StackPanel>
@@ -4262,6 +4582,109 @@
                               </StackPanel>
                             </Expander>
 
+                            <!-- ===== Section 4: Repair Actions — the only place that CHANGES system state. ===== -->
+                            <Expander IsExpanded="False" Margin="0,0,0,12" FontSize="15" FontWeight="SemiBold">
+                              <Expander.Header>
+                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                    <Border Style="{StaticResource HomeSectionIconBadge}" Background="#D97706"
+                                            Width="26" Height="26" CornerRadius="7" Margin="0,0,8,0">
+                                        <TextBlock Style="{StaticResource HomeSectionIcon}" FontSize="13" Text="&#xE90F;" />
+                                    </Border>
+                                    <TextBlock Text="Repair Actions" VerticalAlignment="Center" />
+                                </StackPanel>
+                              </Expander.Header>
+                              <StackPanel Margin="0,8,0,0">
+                                <Border Style="{StaticResource Card}">
+                                    <StackPanel>
+                                        <TextBlock Text="Network first aid" FontSize="18" FontWeight="SemiBold" />
+                                        <TextBlock Text="Unlike everything else on this page, these buttons CHANGE system state. Each action asks for confirmation when it can drop connectivity, reports exactly what it did, and is logged in the activity feed. Re-run Quick Diagnosis afterwards to confirm the fix."
+                                                   Foreground="#475569" FontSize="12.5" TextWrapping="Wrap" Margin="0,6,0,12" />
+
+                                        <Border Background="#FEF3C7" BorderBrush="#FCD34D" BorderThickness="1" CornerRadius="8" Padding="12,9" Margin="0,0,0,12"
+                                                Visibility="{Binding RepairActions.ShowAdminHint, Converter={StaticResource BoolVisibility}}">
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBlock Text="&#xE7BA;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Foreground="#B45309" FontSize="14" VerticalAlignment="Center" />
+                                                <TextBlock Text="Reset Winsock and Restart Adapter need administrator rights — use 'Restart as administrator' on Technician Home first."
+                                                           Foreground="#92400E" FontSize="12.5" Margin="9,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap" />
+                                            </StackPanel>
+                                        </Border>
+
+                                        <WrapPanel>
+                                            <Button Style="{StaticResource HomeToolButton}" Command="{Binding RepairActions.FlushDnsCommand}"
+                                                    ToolTip="Clears the local DNS resolver cache (Clear-DnsClientCache). Fixes stale records after server/DNS changes. No admin needed, no outage.">
+                                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                                    <TextBlock FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Text="&#xE72C;" FontSize="15" Foreground="White" Margin="0,0,8,0" VerticalAlignment="Center" />
+                                                    <TextBlock Text="Flush DNS Cache" FontWeight="SemiBold" Foreground="White" />
+                                                </StackPanel>
+                                            </Button>
+                                            <Button Style="{StaticResource HomeNetworkToolButton}" Command="{Binding RepairActions.RenewDhcpCommand}"
+                                                    ToolTip="ipconfig /release + /renew. Requests a fresh DHCP lease — fixes APIPA (169.254.x.x) and stale-lease issues. Connectivity drops for a few seconds.">
+                                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                                    <TextBlock FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Text="&#xE968;" FontSize="15" Foreground="White" Margin="0,0,8,0" VerticalAlignment="Center" />
+                                                    <TextBlock Text="Renew DHCP Lease" FontWeight="SemiBold" Foreground="White" />
+                                                </StackPanel>
+                                            </Button>
+                                            <Button Style="{StaticResource HomeEventToolButton}" Command="{Binding RepairActions.ResetWinsockCommand}"
+                                                    ToolTip="netsh winsock reset. Repairs corrupted socket registrations (often after malware or VPN removal). Needs administrator rights and a Windows restart.">
+                                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                                    <TextBlock FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Text="&#xE90F;" FontSize="15" Foreground="White" Margin="0,0,8,0" VerticalAlignment="Center" />
+                                                    <TextBlock Text="Reset Winsock" FontWeight="SemiBold" Foreground="White" />
+                                                </StackPanel>
+                                            </Button>
+                                            <Button Style="{StaticResource HomeStorageToolButton}" Command="{Binding RepairActions.RestartAdapterCommand}"
+                                                    ToolTip="Restart-NetAdapter on the active adapter from the latest Quick Diagnosis. Re-negotiates link and DHCP — the classic fix for a stuck NIC. Needs administrator rights; the connection drops for several seconds.">
+                                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                                    <TextBlock FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Text="&#xE895;" FontSize="15" Foreground="White" Margin="0,0,8,0" VerticalAlignment="Center" />
+                                                    <TextBlock Text="{Binding RepairActions.RestartAdapterButtonText}" FontWeight="SemiBold" Foreground="White" />
+                                                </StackPanel>
+                                            </Button>
+                                            <Button Style="{StaticResource DangerButton}" Command="{Binding RepairActions.CancelRepairCommand}" Margin="0,0,12,10" MinHeight="58"
+                                                    Visibility="{Binding RepairActions.IsRepairRunning, Converter={StaticResource BoolVisibility}}">
+                                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                                    <TextBlock FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Text="&#xE711;" FontSize="13" Margin="0,0,7,0" VerticalAlignment="Center" />
+                                                    <TextBlock Text="Stop" VerticalAlignment="Center" />
+                                                </StackPanel>
+                                            </Button>
+                                        </WrapPanel>
+
+                                        <!-- Last repair outcome -->
+                                        <Border Background="#F8FAFC" BorderBrush="#E2EAF6" BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,4,0,0"
+                                                Visibility="{Binding RepairActions.NoLastResult, Converter={StaticResource BoolVisibility}}">
+                                            <TextBlock Text="No repair has been run yet. Results appear here with the exact outcome and any command output."
+                                                       Foreground="#64748B" FontSize="12.5" TextWrapping="Wrap" />
+                                        </Border>
+                                        <Border BorderThickness="5,1,1,1" CornerRadius="8" Padding="14,12" Margin="0,4,0,0" Background="#FDFEFE"
+                                                BorderBrush="{Binding RepairActions.LastResult.Severity, Converter={StaticResource StatusBrush}, FallbackValue=#E2EAF6}"
+                                                Visibility="{Binding RepairActions.HasLastResult, Converter={StaticResource BoolVisibility}}">
+                                            <StackPanel>
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBlock Grid.Column="0" Text="{Binding RepairActions.LastResult.ActionName}" FontWeight="SemiBold" Foreground="#0F172A" />
+                                                    <TextBlock Grid.Column="1" Text="{Binding RepairActions.LastResult.CompletedAtText}" Foreground="#94A3B8" FontSize="11.5" VerticalAlignment="Center" />
+                                                </Grid>
+                                                <TextBlock Text="{Binding RepairActions.LastResult.Summary}" Foreground="#334155" FontSize="12.5" TextWrapping="Wrap" Margin="0,4,0,0" />
+                                                <Border Background="#FEF3C7" BorderBrush="#FCD34D" BorderThickness="1" CornerRadius="6" Padding="10,7" Margin="0,8,0,0"
+                                                        Visibility="{Binding RepairActions.LastResult.RestartRequired, Converter={StaticResource BoolVisibility}, FallbackValue=Collapsed}">
+                                                    <TextBlock Text="Restart Windows to complete this repair." Foreground="#92400E" FontSize="12" FontWeight="SemiBold" />
+                                                </Border>
+                                                <ItemsControl ItemsSource="{Binding RepairActions.LastResult.OutputLines}" Margin="0,6,0,0"
+                                                              Visibility="{Binding RepairActions.LastResult.HasOutputLines, Converter={StaticResource BoolVisibility}, FallbackValue=Collapsed}">
+                                                    <ItemsControl.ItemTemplate>
+                                                        <DataTemplate>
+                                                            <TextBlock Text="{Binding}" Foreground="#475569" FontSize="12" FontFamily="Consolas, Segoe UI" TextWrapping="Wrap" />
+                                                        </DataTemplate>
+                                                    </ItemsControl.ItemTemplate>
+                                                </ItemsControl>
+                                            </StackPanel>
+                                        </Border>
+                                    </StackPanel>
+                                </Border>
+                              </StackPanel>
+                            </Expander>
+
                                 </StackPanel>
                             </ScrollViewer>
                     </Grid>
@@ -4312,40 +4735,32 @@
                                                 </Border>
                                             </WrapPanel>
                                         </StackPanel>
-                                        <StackPanel Grid.Column="1" VerticalAlignment="Top" Margin="16,0,0,0">
-                                            <TextBlock Style="{StaticResource LabelText}" Text="SNMP protocol" />
-                                            <ComboBox ItemsSource="{Binding SnmpProtocols}" SelectedItem="{Binding SelectedSnmpProtocol}" Height="34" Width="160" />
+                                        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Top" Margin="16,0,0,0">
+                                            <!-- Stop buttons surface here only while something runs; every other
+                                                 action lives in its tab so it sits next to its own results. -->
+                                            <Button Style="{StaticResource DangerButton}" Content="Stop Scan" Command="{Binding CancelPrinterScanCommand}" Margin="0,18,10,0" VerticalAlignment="Top"
+                                                    Visibility="{Binding IsPrinterScanRunning, Converter={StaticResource BoolVisibility}}"
+                                                    ToolTip="Cancel the running printer scan." />
+                                            <Button Style="{StaticResource DangerButton}" Content="Stop SNMP" Command="{Binding CancelPrinterSnmpIdentifyCommand}" Margin="0,18,10,0" VerticalAlignment="Top"
+                                                    Visibility="{Binding IsPrinterSnmpIdentifyRunning, Converter={StaticResource BoolVisibility}}"
+                                                    ToolTip="Cancel SNMP auto-identify." />
+                                            <StackPanel Margin="0,0,12,0">
+                                                <TextBlock Style="{StaticResource LabelText}" Text="SNMP protocol" />
+                                                <ComboBox ItemsSource="{Binding SnmpProtocols}" SelectedItem="{Binding SelectedSnmpProtocol}" Height="34" Width="160" />
+                                            </StackPanel>
+                                            <Button Style="{StaticResource PrimaryButtonPrinters}" Command="{Binding CopyPrinterSummaryCommand}" VerticalAlignment="Top" Margin="0,18,0,0"
+                                                    ToolTip="Copy a plain-text printer summary (queues, scan, install result + remediation) to the clipboard.">
+                                                <StackPanel Orientation="Horizontal">
+                                                    <TextBlock FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Text="&#xE8C8;" FontSize="13" Margin="0,0,7,0" VerticalAlignment="Center" />
+                                                    <TextBlock Text="Copy for ticket" />
+                                                </StackPanel>
+                                            </Button>
                                         </StackPanel>
                                     </Grid>
 
-                                    <ProgressBar Margin="0,0,0,10" Height="3" IsIndeterminate="True" Background="Transparent" BorderThickness="0"
+                                    <ProgressBar Margin="0,0,0,2" Height="3" IsIndeterminate="True" Background="Transparent" BorderThickness="0"
                                                  Foreground="{StaticResource AccentPrinters}"
                                                  Visibility="{Binding IsBusy, Converter={StaticResource BoolVisibility}}" />
-
-                                    <WrapPanel>
-                                        <Button Style="{StaticResource SecondaryButton}" Content="Detect My IP" Command="{Binding DetectPrinterIpCommand}" Margin="0,0,10,8"
-                                                ToolTip="Detect this PC's IP and gateway, propose a safe LAN scan range." />
-                                        <Button Style="{StaticResource SecondaryButton}" Content="Refresh Installed" Command="{Binding LoadLocalPrintersCommand}" Margin="0,0,10,8"
-                                                ToolTip="Reload installed printer queues from this PC." />
-                                        <Button Style="{StaticResource SecondaryButton}" Content="Auto-detect Server" Command="{Binding DetectPrintServerCommand}" Margin="0,0,10,8"
-                                                ToolTip="Detect a print server from installed shared printer connections on this PC." />
-                                        <Button Style="{StaticResource SecondaryButton}" Content="Discover Server" Command="{Binding DiscoverPrintServerCommand}" Margin="0,0,10,8"
-                                                ToolTip="Find the print server hosting your shared queues. Only LAN hosts (NetBIOS short name or private IPv4) are accepted." />
-                                        <Button Style="{StaticResource SecondaryButton}" Content="Auto Safe Scan" Command="{Binding ScanPrintersCommand}" Margin="0,0,10,8"
-                                                ToolTip="Scan the local /24 subnet for printers (capped at 254 hosts, RFC-1918 only)." />
-                                        <Button Style="{StaticResource SecondaryButton}" Content="SNMP Identify" Command="{Binding IdentifySelectedPrinterSnmpCommand}" Margin="0,0,10,8"
-                                                ToolTip="Query SNMP for model, serial number and supplies on the selected target." />
-                                        <Button Style="{StaticResource SecondaryButton}" Content="Auto SNMP Identify" Command="{Binding AutoIdentifyScannedPrintersSnmpCommand}" Margin="0,0,10,8"
-                                                ToolTip="Run read-only SNMP identity checks on scanned printer candidates and confirm real printers." />
-                                        <Button Style="{StaticResource SecondaryButton}" Content="Copy for ticket" Command="{Binding CopyPrinterSummaryCommand}" Margin="0,0,10,8"
-                                                ToolTip="Copy a plain-text printer summary (queues, scan, install result + remediation) to the clipboard." />
-                                        <Button Style="{StaticResource DangerButton}" Content="Stop Scan" Command="{Binding CancelPrinterScanCommand}" Margin="0,0,0,8"
-                                                Visibility="{Binding IsPrinterScanRunning, Converter={StaticResource BoolVisibility}}"
-                                                ToolTip="Cancel the running printer scan." />
-                                        <Button Style="{StaticResource DangerButton}" Content="Stop SNMP" Command="{Binding CancelPrinterSnmpIdentifyCommand}" Margin="10,0,0,8"
-                                                Visibility="{Binding IsPrinterSnmpIdentifyRunning, Converter={StaticResource BoolVisibility}}"
-                                                ToolTip="Cancel SNMP auto-identify." />
-                                    </WrapPanel>
                                 </StackPanel>
                             </Border>
 
@@ -4435,7 +4850,7 @@
                                             <TextBlock Style="{StaticResource LabelText}" Text="Print server" />
                                             <TextBox Text="{Binding PrintServerName, UpdateSourceTrigger=PropertyChanged}" Height="36" Padding="10,7" BorderBrush="#BFCFE5" Margin="0,0,0,8" />
                                             <WrapPanel Margin="0,0,0,10">
-                                                <Button Style="{StaticResource SecondaryButton}" Content="Auto-detect Server" Command="{Binding DetectPrintServerCommand}" Margin="0,0,10,0" ToolTip="Detect a print server from installed shared printer connections on this PC." />
+                                                <Button Style="{StaticResource PrimaryButtonPrinters}" Content="Auto-detect Server" Command="{Binding DetectPrintServerCommand}" Margin="0,0,10,0" ToolTip="Finds the print server by itself: first from installed shared connections on this PC, then from print servers published in Active Directory (domain PCs)." />
                                                 <Button Style="{StaticResource SecondaryButton}" Content="Discover Print Server" Command="{Binding DiscoverPrintServerCommand}" ToolTip="Find the print server hosting shared queues (UNC \\server\share lookup)" />
                                             </WrapPanel>
                                             <TextBlock Text="{Binding LastPrinterDiscovery.PrintServerSpoolerStatus, StringFormat=Print server spooler: {0}, TargetNullValue=Print server spooler: Unknown}" Foreground="#475569" Margin="0,0,0,8" />
@@ -4477,8 +4892,18 @@
                                                         ToolTip="Cancel the active printer IP scan." />
                                                 <Button Style="{StaticResource DangerButton}" Content="Remove Selected" Command="{Binding RemoveSelectedPrinterScanResultCommand}" Margin="10,0,0,8" ToolTip="Remove the selected scanned/SNMP row from the current printer session." />
                                             </WrapPanel>
-                                            <TextBlock Text="Custom range accepts single IP, CIDR up to 254 hosts, or explicit range. /16 is intentionally rejected." Foreground="#475569" FontSize="12" TextWrapping="Wrap" Margin="0,0,0,8" />
-                                            <DataGrid ItemsSource="{Binding LastPrinterDiscovery.ScanResults}" SelectedItem="{Binding SelectedPrinterScanResult}" AutoGenerateColumns="False" CanUserAddRows="False" IsReadOnly="True"
+                                            <Grid Margin="0,0,0,8">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Grid.Column="0" Text="Custom range accepts single IP, CIDR up to 254 hosts, or explicit range. /16 is intentionally rejected." Foreground="#475569" FontSize="12" TextWrapping="Wrap" />
+                                                <CheckBox Grid.Column="1" Content="Only printers" IsChecked="{Binding ShowOnlyPrinters}" Margin="12,0,0,0" VerticalAlignment="Center"
+                                                          ToolTip="Hide rows SNMP identified as non-printers (switches, NAS, UPS). Scanning already targets only printer ports 9100/515/631." />
+                                            </Grid>
+                                            <TextBlock Text="{Binding HiddenScanResultCountText}" Foreground="#B45309" FontSize="12" Margin="0,0,0,6"
+                                                       Visibility="{Binding HasHiddenScanResults, Converter={StaticResource BoolVisibility}}" />
+                                            <DataGrid ItemsSource="{Binding FilteredScanResults}" SelectedItem="{Binding SelectedPrinterScanResult}" AutoGenerateColumns="False" CanUserAddRows="False" IsReadOnly="True"
                                                       MinHeight="240" MaxHeight="420"
                                                       HeadersVisibility="Column" GridLinesVisibility="Horizontal"
                                                       ScrollViewer.VerticalScrollBarVisibility="Visible"
@@ -4553,7 +4978,7 @@
                                                         ToolTip="Cancel SNMP auto-identify." />
                                                 <Button Style="{StaticResource DangerButton}" Content="Remove Selected" Command="{Binding RemoveSelectedPrinterScanResultCommand}" ToolTip="Remove the selected SNMP/scanned row from the current printer session." />
                                             </WrapPanel>
-                                            <DataGrid ItemsSource="{Binding LastPrinterDiscovery.ScanResults}" SelectedItem="{Binding SelectedPrinterScanResult}" AutoGenerateColumns="False" CanUserAddRows="False" IsReadOnly="True"
+                                            <DataGrid ItemsSource="{Binding FilteredScanResults}" SelectedItem="{Binding SelectedPrinterScanResult}" AutoGenerateColumns="False" CanUserAddRows="False" IsReadOnly="True"
                                                       MinHeight="180" MaxHeight="340"
                                                       HeadersVisibility="Column" GridLinesVisibility="Horizontal"
                                                       ScrollViewer.VerticalScrollBarVisibility="Visible"
@@ -4629,7 +5054,7 @@
 
                                                     <!-- Active alerts -->
                                                     <Border CornerRadius="6" Padding="10,8" Margin="0,4,0,0" Background="#422006" BorderBrush="#B45309" BorderThickness="1"
-                                                            Visibility="{Binding SelectedPrinterScanResult.SnmpInfo.HasAlerts, Converter={StaticResource BoolVisibility}}">
+                                                            Visibility="{Binding SelectedPrinterScanResult.SnmpInfo.HasAlerts, Converter={StaticResource BoolVisibility}, FallbackValue=Collapsed}">
                                                         <StackPanel>
                                                             <TextBlock Text="⚠ Active alerts" FontSize="12" FontWeight="SemiBold" Foreground="#FBBF24" Margin="0,0,0,4" />
                                                             <ItemsControl ItemsSource="{Binding SelectedPrinterScanResult.SnmpInfo.ActiveAlerts}">
@@ -4652,7 +5077,9 @@
                                         <StackPanel>
                                             <TextBlock Text="Install works only for a selected shared print server queue. It adds the queue to this PC using Windows Point and Print policy." Foreground="#475569" TextWrapping="Wrap" Margin="0,0,0,10" />
                                             <TextBlock Style="{StaticResource ValueText}" Text="{Binding SelectedPrintServerPrinter.ConnectionName, TargetNullValue=No queue selected}" Margin="0,0,0,8" />
-                                            <CheckBox Content="I confirm installing the selected shared queue on this PC" IsChecked="{Binding ConfirmPrinterInstall}" Margin="0,0,0,10" />
+                                            <CheckBox Content="I confirm installing the selected shared queue on this PC" IsChecked="{Binding ConfirmPrinterInstall}" Margin="0,0,0,6" />
+                                            <CheckBox Content="Set the installed queue as the Windows default printer" IsChecked="{Binding SetDefaultAfterInstall}" Margin="0,0,0,10"
+                                                      ToolTip="Optional: right after a successful install, make the new queue the default printer for the current user." />
                                             <Button Style="{StaticResource PrimaryButtonPrinters}" Content="Install Selected Queue" Command="{Binding InstallSelectedPrinterQueueCommand}" HorizontalAlignment="Left" Margin="0,0,0,10" />
 
                                             <!-- Premium install result card: severity badge + verdict + remediation hint. -->
@@ -5348,6 +5775,7 @@
                                              <DataGridTextColumn Header="Loss" Binding="{Binding LossText}" Width="90" />
                                              <DataGridTextColumn Header="Ports" Binding="{Binding PortSummary}" Width="220" />
                                              <DataGridTextColumn Header="Share" Binding="{Binding ShareStatus}" Width="110" />
+                                             <DataGridTextColumn Header="Published shares" Binding="{Binding VisibleSharesText}" Width="220" />
                                              <DataGridTextColumn Header="Verdict" Binding="{Binding Verdict}" Width="150" />
                                              <DataGridTextColumn Header="Owner" Binding="{Binding OwnerSuggestion}" Width="150" />
                                              <DataGridTextColumn Header="Collector" Binding="{Binding CollectorStatus}" Width="180" />
@@ -5476,9 +5904,9 @@
                                             <ColumnDefinition Width="*" />
                                             <ColumnDefinition Width="Auto" />
                                         </Grid.ColumnDefinitions>
-                                        <TextBlock Grid.Column="0" Text="{Binding LastNetworkDevice.VerdictDisplay, TargetNullValue=No network device check has been run yet, FallbackValue=No network device check has been run yet}"
+                                        <TextBlock Grid.Column="0" Text="{Binding HeadlineVerdict}"
                                                    FontSize="20" FontWeight="SemiBold" TextWrapping="Wrap"
-                                                   Foreground="{Binding LastNetworkDevice.Severity, Converter={StaticResource StatusBrush}}" />
+                                                   Foreground="{Binding HeadlineSeverity, Converter={StaticResource StatusBrush}}" />
                                         <Button Grid.Column="1" Style="{StaticResource NetworkDeviceCopyButton}" Content="Copy for ticket" VerticalAlignment="Top" Margin="12,0,0,0"
                                                 Command="{Binding CopyNetworkDeviceSummaryCommand}"
                                                 ToolTip="Copy a plain-text device + interface + scan summary to the clipboard." />
@@ -5715,18 +6143,35 @@
                                               VirtualizingPanel.IsVirtualizing="True"
                                               VirtualizingPanel.VirtualizationMode="Recycling">
                                         <DataGrid.Columns>
-                                            <DataGridTextColumn Header="IP" Binding="{Binding AddressDisplay}" Width="130" />
-                                            <DataGridTextColumn Header="Type" Binding="{Binding DeviceTypeDisplay}" Width="120" />
-                                            <DataGridTextColumn Header="Layer" Binding="{Binding AffectedLayerDisplay}" Width="140" />
-                                            <DataGridTextColumn Header="Owner" Binding="{Binding OwnerSuggestionDisplay}" Width="120" />
-                                            <DataGridTextColumn Header="Confidence" Binding="{Binding ConfidenceDisplay}" Width="100" />
-                                            <DataGridTextColumn Header="Name" Binding="{Binding IdentityNameDisplay}" Width="170" />
-                                            <DataGridTextColumn Header="Description" Binding="{Binding IdentityDescriptionDisplay}" Width="*" />
-                                            <DataGridTextColumn Header="Ping" Binding="{Binding PingReachableText}" Width="80" />
-                                            <DataGridTextColumn Header="Confirmation" Binding="{Binding ConfirmationStatusDisplay}" Width="150" />
-                                            <DataGridTextColumn Header="Verdict" Binding="{Binding VerdictDisplay}" Width="220" />
+                                            <DataGridTextColumn Header="IP" Binding="{Binding AddressDisplay}" Width="120" />
+                                            <DataGridTextColumn Header="Name" Binding="{Binding DisplayName}" Width="180" />
+                                            <DataGridTextColumn Header="Type" Binding="{Binding DeviceTypeDisplay}" Width="190" />
+                                            <DataGridTextColumn Header="Vendor (MAC)" Binding="{Binding MacVendorDisplay}" Width="150" />
+                                            <DataGridTextColumn Header="MAC" Binding="{Binding MacAddressDisplay}" Width="150" />
+                                            <DataGridTextColumn Header="Label / location" Binding="{Binding FriendlyLabelDisplay}" Width="180" />
+                                            <DataGridTextColumn Header="SNMP location" Binding="{Binding LocationDisplay}" Width="140" />
+                                            <DataGridTextColumn Header="Confidence" Binding="{Binding ClassificationConfidenceDisplay}" Width="100" />
+                                            <DataGridTextColumn Header="Ping" Binding="{Binding PingReachableText}" Width="70" />
+                                            <DataGridTextColumn Header="Open ports" Binding="{Binding OpenPortSummary}" Width="140" />
+                                            <DataGridTextColumn Header="Confirmation" Binding="{Binding ConfirmationStatusDisplay}" Width="*" />
                                         </DataGrid.Columns>
                                     </DataGrid>
+                                    <!-- Label editor: name + location for the selected device, persisted per MAC. -->
+                                    <Grid Margin="0,10,0,0" Visibility="{Binding HasNetworkDeviceScanResults, Converter={StaticResource BoolVisibility}}">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="Label / location for selected device:" Foreground="#475569" FontSize="12.5" VerticalAlignment="Center" Margin="0,0,10,0" />
+                                        <TextBox Grid.Column="1" Text="{Binding SelectedDeviceLabelText, UpdateSourceTrigger=PropertyChanged}" Height="34" Padding="10,6" BorderBrush="#BFCFE5" VerticalContentAlignment="Center"
+                                                 ToolTip="Free text saved per device MAC, e.g. 'Imprimanta etaj 2 — contabilitate'. Shared with the Wi-Fi module's device names." />
+                                        <Button Grid.Column="2" Style="{StaticResource SecondaryButton}" Content="Save Label" Command="{Binding SaveDeviceLabelCommand}" Margin="10,0,0,0"
+                                                ToolTip="Persist the label for this device (keyed by MAC, falls back to IP)." />
+                                        <Button Grid.Column="3" Style="{StaticResource SecondaryButton}" Content="Clear" Command="{Binding ClearDeviceLabelCommand}" Margin="8,0,0,0"
+                                                ToolTip="Remove the saved label for this device." />
+                                    </Grid>
                                 </StackPanel>
                             </Border>
 

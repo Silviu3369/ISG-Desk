@@ -75,6 +75,68 @@ public class TechnicianHomeViewModelTests
         vm.NetworkSummary.Should().Contain("192.168.1.25");
         vm.SecurityPostureSeverity.Should().Be("OK");
         vm.SecuritySummary.Should().Be("Tracked controls look healthy");
+        vm.StorageSeverity.Should().Be("OK");
+        vm.StorageSummary.Should().Be("1 disk(s) healthy · C: 50% free");
+        vm.HasDisks.Should().BeTrue();
+        vm.HasVolumes.Should().BeTrue();
+    }
+
+    [Fact]
+    public void StorageSeverity_BeforeFirstLoad_IsUnknown()
+    {
+        var vm = Build(
+            new FakeHost(),
+            new FakeCollector(_ => Task.FromResult(MakeHealthyOverview())),
+            new ActivityFeedService());
+
+        vm.StorageSeverity.Should().Be("Unknown");
+        vm.StorageSummary.Should().Be("Unknown");
+    }
+
+    [Fact]
+    public async Task StorageSeverity_FailingDisk_EscalatesToCritical()
+    {
+        var overview = MakeHealthyOverview();
+        overview.Disks = new[]
+        {
+            new SystemOverviewDisk { Model = "OK disk", HealthStatus = "Healthy" },
+            new SystemOverviewDisk { Model = "Dying disk", HealthStatus = "Healthy", FailurePredicted = true }
+        };
+        var vm = Build(
+            new FakeHost(),
+            new FakeCollector(_ => Task.FromResult(overview)),
+            new ActivityFeedService());
+
+        await vm.EnsureLoadedAsync();
+
+        vm.StorageSeverity.Should().Be("Critical");
+        vm.StorageSummary.Should().Contain("1 of 2 disk(s) need attention");
+    }
+
+    [Fact]
+    public async Task StorageSeverity_LowSystemDriveSpace_Warns()
+    {
+        var overview = MakeHealthyOverview();
+        overview.Disks = Array.Empty<SystemOverviewDisk>();
+        overview.Volumes = new[]
+        {
+            new SystemOverviewVolume
+            {
+                DriveLetter = "C:",
+                TotalBytes = 500L * 1024 * 1024 * 1024,
+                FreeBytes = 40L * 1024 * 1024 * 1024,   // 8 % free
+                IsSystemDrive = true
+            }
+        };
+        var vm = Build(
+            new FakeHost(),
+            new FakeCollector(_ => Task.FromResult(overview)),
+            new ActivityFeedService());
+
+        await vm.EnsureLoadedAsync();
+
+        vm.StorageSeverity.Should().Be("Warning");
+        vm.StorageSummary.Should().Contain("C: 8% free");
     }
 
     [Fact]
@@ -140,6 +202,40 @@ public class TechnicianHomeViewModelTests
         vm.OpenEventViewerCommand.Should().NotBeNull();
         vm.OpenWindowsSecurityCommand.Should().NotBeNull();
         vm.OpenSystemAboutCommand.Should().NotBeNull();
+        vm.OpenDiskManagementCommand.Should().NotBeNull();
+        vm.OpenTaskManagerCommand.Should().NotBeNull();
+        vm.RestartAsAdminCommand.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task ShowRestartAsAdmin_VisibleOnlyAfterLoadWhenNotElevated()
+    {
+        var overview = MakeHealthyOverview();
+        overview.User.AdminRights = "Standard user";
+        overview.User.Elevated = "No (not elevated)";
+        var vm = Build(
+            new FakeHost(),
+            new FakeCollector(_ => Task.FromResult(overview)),
+            new ActivityFeedService());
+
+        vm.ShowRestartAsAdmin.Should().BeFalse("nothing is known before the first snapshot");
+
+        await vm.EnsureLoadedAsync();
+
+        vm.ShowRestartAsAdmin.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task ShowRestartAsAdmin_HiddenWhenAlreadyElevated()
+    {
+        var vm = Build(
+            new FakeHost(),
+            new FakeCollector(_ => Task.FromResult(MakeHealthyOverview())),
+            new ActivityFeedService());
+
+        await vm.EnsureLoadedAsync();
+
+        vm.ShowRestartAsAdmin.Should().BeFalse();
     }
 
     private static TechnicianHomeViewModel Build(
@@ -219,6 +315,34 @@ public class TechnicianHomeViewModelTests
             SecureBoot = "Enabled",
             TpmStatus = "Present, ready",
             WindowsActivation = "Activated"
+        },
+        Disks = new[]
+        {
+            new SystemOverviewDisk
+            {
+                Model = "Samsung SSD 980",
+                MediaType = "SSD",
+                BusType = "NVMe",
+                Size = "477 GB",
+                SerialNumber = "S1ABC",
+                HealthStatus = "Healthy",
+                SmartAvailable = true,
+                WearPercent = 4,
+                TemperatureC = 34,
+                PowerOnHours = 1200
+            }
+        },
+        Volumes = new[]
+        {
+            new SystemOverviewVolume
+            {
+                DriveLetter = "C:",
+                Label = "Windows",
+                FileSystem = "NTFS",
+                TotalBytes = 512L * 1024 * 1024 * 1024,
+                FreeBytes = 256L * 1024 * 1024 * 1024,
+                IsSystemDrive = true
+            }
         }
     };
 

@@ -1,3 +1,4 @@
+using System.IO;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
@@ -51,11 +52,12 @@ public sealed class SystemOverviewCollector : JsonCollectorBase, ISystemOverview
         try { FillIdentityAndOs(overview); } catch { /* leave defaults */ }
         try { FillNetwork(overview); } catch { /* leave defaults */ }
         try { FillWifiSsid(overview); } catch { /* leave defaults */ }
+        try { FillVolumes(overview); } catch { /* leave defaults */ }
 
         // ---- Heavy tier: PowerShell, time-boxed, fully optional. ----
         try
         {
-            var heavy = await RunCollectorAsync<HeavyFacts>(HeavyScript, TimeSpan.FromSeconds(12), cancellationToken)
+            var heavy = await RunCollectorAsync<HeavyFacts>(HeavyScript, TimeSpan.FromSeconds(15), cancellationToken)
                         .ConfigureAwait(false);
             if (heavy is not null) ApplyHeavy(overview, heavy);
             else overview.CollectorNote = "Some details need administrator rights or were unavailable.";
@@ -216,6 +218,40 @@ public sealed class SystemOverviewCollector : JsonCollectorBase, ISystemOverview
         catch { return null; }
     }
 
+    /// <summary>
+    /// Fixed volumes via DriveInfo — pure BCL, no admin, instant. Runs in the fast tier so
+    /// the usage bars render even when the PowerShell tier fails or times out.
+    /// </summary>
+    private static void FillVolumes(SystemOverview o)
+    {
+        var systemRoot = SafeSystemRoot();
+        var volumes = new List<SystemOverviewVolume>();
+        foreach (var drive in DriveInfo.GetDrives())
+        {
+            try
+            {
+                if (drive.DriveType != DriveType.Fixed || !drive.IsReady || drive.TotalSize <= 0) continue;
+                volumes.Add(new SystemOverviewVolume
+                {
+                    DriveLetter = drive.Name.TrimEnd('\\'),
+                    Label = string.IsNullOrWhiteSpace(drive.VolumeLabel) ? "Local Disk" : drive.VolumeLabel.Trim(),
+                    FileSystem = SafeOr(drive.DriveFormat, ""),
+                    TotalBytes = drive.TotalSize,
+                    FreeBytes = drive.AvailableFreeSpace,
+                    IsSystemDrive = string.Equals(drive.Name, systemRoot, StringComparison.OrdinalIgnoreCase),
+                });
+            }
+            catch { /* skip volumes that disappear or deny access mid-enumeration */ }
+        }
+        o.Volumes = volumes;
+    }
+
+    private static string SafeSystemRoot()
+    {
+        try { return Path.GetPathRoot(Environment.SystemDirectory) ?? @"C:\"; }
+        catch { return @"C:\"; }
+    }
+
     // ----------------------------------------------------------------- heavy tier
 
     private static void ApplyHeavy(SystemOverview o, HeavyFacts h)
@@ -272,6 +308,29 @@ public sealed class SystemOverviewCollector : JsonCollectorBase, ISystemOverview
                 })
                 .ToArray();
         }
+
+        // Physical disks with S.M.A.R.T. health from MSFT_PhysicalDisk (+ reliability counters when admin).
+        if (h.Disks is { Length: > 0 })
+        {
+            o.Disks = h.Disks
+                .Where(d => d is not null)
+                .Select(d => new SystemOverviewDisk
+                {
+                    Model = SafeOr(d!.Model),
+                    MediaType = SafeOr(d.MediaType),
+                    BusType = SafeOr(d.BusType),
+                    Size = SafeOr(d.Size),
+                    SerialNumber = SafeOr(d.SerialNumber),
+                    HealthStatus = SafeOr(d.HealthStatus),
+                    FailurePredicted = d.FailurePredicted,
+                    SmartAvailable = d.SmartAvailable,
+                    WearPercent = d.WearPercent,
+                    TemperatureC = d.TemperatureC,
+                    PowerOnHours = d.PowerOnHours,
+                    SpindleRpm = d.SpindleRpm,
+                })
+                .ToArray();
+        }
     }
 
     private sealed class HeavyFacts
@@ -305,6 +364,7 @@ public sealed class SystemOverviewCollector : JsonCollectorBase, ISystemOverview
         public string? TpmStatus { get; set; }
         public string? WindowsActivation { get; set; }
         public HeavyEvent[]? RecentEvents { get; set; }
+        public HeavyDisk[]? Disks { get; set; }
     }
 
     private sealed class HeavyEvent
@@ -315,6 +375,22 @@ public sealed class SystemOverviewCollector : JsonCollectorBase, ISystemOverview
         public string? Source { get; set; }
         public int EventId { get; set; }
         public string? Message { get; set; }
+    }
+
+    private sealed class HeavyDisk
+    {
+        public string? Model { get; set; }
+        public string? MediaType { get; set; }
+        public string? BusType { get; set; }
+        public string? Size { get; set; }
+        public string? SerialNumber { get; set; }
+        public string? HealthStatus { get; set; }
+        public bool FailurePredicted { get; set; }
+        public bool SmartAvailable { get; set; }
+        public int? WearPercent { get; set; }
+        public int? TemperatureC { get; set; }
+        public long? PowerOnHours { get; set; }
+        public int? SpindleRpm { get; set; }
     }
 
     // Static literal — no interpolation of untrusted input. Every probe is individually
@@ -531,6 +607,84 @@ if ($cs -and $cs.PartOfDomain -and $env:LOGONSERVER) {
     if ($candidate -and $candidate -ne $env:COMPUTERNAME) { $logon = $candidate }
 }
 
+# ---- Physical disks + S.M.A.R.T. health ----
+# MSFT_PhysicalDisk (Get-PhysicalDisk) is readable by standard users; the reliability
+# counters (temperature / wear / power-on hours) usually need admin → per-disk guarded.
+# Enum maps per MSFT_PhysicalDisk docs: MediaType 3=HDD 4=SSD 5=SCM; HealthStatus
+# 0=Healthy 1=Warning 2=Unhealthy 5=Unknown; OperationalStatus 5=Predictive Failure.
+$disksOut=@()
+try {
+    $dds = @(Get-CimInstance Win32_DiskDrive -ErrorAction SilentlyContinue)
+    $pds = @(Get-PhysicalDisk -ErrorAction SilentlyContinue)
+    foreach ($pd in $pds) {
+        $mtRaw = "$($pd.MediaType)"
+        $media = switch ($mtRaw) {
+            'SSD' { 'SSD' } 'HDD' { 'HDD' } 'SCM' { 'SCM' }
+            '4'   { 'SSD' } '3'   { 'HDD' } '5'   { 'SCM' }
+            'Unspecified' { 'Unknown' } '0' { 'Unknown' }
+            default { if ($mtRaw) { $mtRaw } else { 'Unknown' } }
+        }
+        $btRaw = "$($pd.BusType)"
+        $bus = switch ($btRaw) {
+            '17' { 'NVMe' } '11' { 'SATA' } '10' { 'SAS' } '8' { 'RAID' } '7' { 'USB' }
+            '3'  { 'ATA' }  '16' { 'Storage Spaces' } '0' { 'Unknown' }
+            default { if ($btRaw) { $btRaw } else { 'Unknown' } }
+        }
+        # NVMe drives are SSDs even when MediaType comes back Unspecified.
+        if ($media -eq 'Unknown' -and $bus -eq 'NVMe') { $media = 'SSD' }
+        $hsRaw = "$($pd.HealthStatus)"
+        $health = switch ($hsRaw) {
+            'Healthy' { 'Healthy' } 'Warning' { 'Warning' } 'Unhealthy' { 'Unhealthy' }
+            '0' { 'Healthy' } '1' { 'Warning' } '2' { 'Unhealthy' } '5' { 'Unknown' }
+            default { if ($hsRaw) { $hsRaw } else { 'Unknown' } }
+        }
+        $ops = @(); try { $ops = @($pd.OperationalStatus | ForEach-Object { "$_" }) } catch {}
+        $predict = ($ops -contains 'Predictive Failure') -or ($ops -contains '5')
+        $dd = $dds | Where-Object { "$($_.Index)" -eq "$($pd.DeviceId)" } | Select-Object -First 1
+        if ($dd -and "$($dd.Status)" -match 'Pred') { $predict = $true }
+        $sizeDisp = 'Unknown'
+        try {
+            if ($pd.Size -gt 0) {
+                if ($pd.Size -ge 1TB) { $sizeDisp = '{0:0.##} TB' -f ($pd.Size / 1TB) }
+                else { $sizeDisp = '{0:0} GB' -f [math]::Round($pd.Size / 1GB) }
+            }
+        } catch {}
+        $serial = "$($pd.SerialNumber)".Trim()
+        if (-not $serial -and $dd) { $serial = "$($dd.SerialNumber)".Trim() }
+        $model = "$($pd.FriendlyName)".Trim()
+        if (-not $model -and $dd) { $model = "$($dd.Model)".Trim() }
+        $rpm = $null
+        try {
+            $sp = [uint32]$pd.SpindleSpeed
+            if ($media -eq 'HDD' -and $sp -gt 0 -and $sp -lt 4294967295) { $rpm = [int]$sp }
+        } catch {}
+        $smartOk=$false; $wear=$null; $tempC=$null; $hours=$null
+        try {
+            $rel = $pd | Get-StorageReliabilityCounter -ErrorAction Stop
+            if ($rel) {
+                $smartOk = $true
+                if ($null -ne $rel.Wear -and "$($rel.Wear)" -ne '') { $wear = [int]$rel.Wear }
+                if ($rel.Temperature -gt 0) { $tempC = [int]$rel.Temperature }
+                if ($rel.PowerOnHours -gt 0) { $hours = [long]$rel.PowerOnHours }
+            }
+        } catch {}
+        $disksOut += [pscustomobject]@{
+            Model           = $model
+            MediaType       = $media
+            BusType         = $bus
+            Size            = $sizeDisp
+            SerialNumber    = $serial
+            HealthStatus    = $health
+            FailurePredicted= [bool]$predict
+            SmartAvailable  = [bool]$smartOk
+            WearPercent     = $wear
+            TemperatureC    = $tempC
+            PowerOnHours    = $hours
+            SpindleRpm      = $rpm
+        }
+    }
+} catch {}
+
 # Recent Critical / Error events — last 48 h, top 8 across System + Application.
 $events=@()
 try {
@@ -585,6 +739,7 @@ try {
     TpmStatus         = S $tpm
     WindowsActivation = S $activation
     RecentEvents      = @($events)
+    Disks             = @($disksOut)
 } | ConvertTo-Json -Depth 4 -Compress
 """;
 

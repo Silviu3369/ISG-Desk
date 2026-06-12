@@ -16,10 +16,10 @@
     <AssemblyTitle>ISG Desk</AssemblyTitle>
     <Product>ISG Desk - IT Support &amp; Network Diagnostics</Product>
     <Description>ISG Desk - IT Support &amp; Network Diagnostics</Description>
-    <Version>1.0.0</Version>
-    <AssemblyVersion>1.0.0.0</AssemblyVersion>
-    <FileVersion>1.0.0.0</FileVersion>
-    <InformationalVersion>1.0.0</InformationalVersion>
+    <Version>1.1.0</Version>
+    <AssemblyVersion>1.1.0.0</AssemblyVersion>
+    <FileVersion>1.1.0.0</FileVersion>
+    <InformationalVersion>1.1.0</InformationalVersion>
 
     <!-- Publish defaults: framework-dependent single-file (small, requires .NET 8 runtime). -->
     <PublishSingleFile Condition="'$(PublishProfile)'=='Portable'">true</PublishSingleFile>
@@ -43,6 +43,8 @@
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="8.0.0" />
     <PackageReference Include="Serilog" Version="3.1.1" />
     <PackageReference Include="Serilog.Sinks.File" Version="5.0.0" />
+    <!-- AD-published print server discovery (printQueue objects). Windows-only, first-party. -->
+    <PackageReference Include="System.DirectoryServices" Version="8.0.0" />
   </ItemGroup>
 
   <ItemGroup>

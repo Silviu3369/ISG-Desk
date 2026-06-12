@@ -72,6 +72,26 @@ public sealed record MonitoringSummary(
     }
 
     /// <summary>
+    /// Sidebar loss text. Honest before the first sample — the old binding fallback
+    /// claimed "loss 0%" while the monitor had measured nothing yet.
+    /// Invariant culture so the dot decimal separator is stable across locales.
+    /// </summary>
+    public string LossDisplay => SampleCount == 0
+        ? "waiting for samples"
+        : FormattableString.Invariant($"loss {LossPercent:N0}%");
+
+    /// <summary>Multi-line tooltip with the whole window's statistics.</summary>
+    public string TooltipText => SampleCount == 0
+        ? "No samples yet — the gateway monitor is waiting for its first ping."
+        : FormattableString.Invariant($"Window: {SampleCount} sample(s) over {Duration.TotalSeconds:N0} s\n") +
+          FormattableString.Invariant($"Latency: avg {FormatMs(AverageLatencyMs)} · min {FormatMs(MinLatencyMs)} · max {FormatMs(MaxLatencyMs)}\n") +
+          FormattableString.Invariant($"Jitter: {FormatMs(JitterMs)} · loss {LossPercent:N1}% ({FailureCount} failed)");
+
+    private static string FormatMs(double? value) => value.HasValue
+        ? FormattableString.Invariant($"{value.Value:N1} ms")
+        : "—";
+
+    /// <summary>
     /// Mean absolute difference between consecutive latencies — a simple proxy for jitter.
     /// </summary>
     private static double? ComputeJitter(IReadOnlyList<double> latencies)

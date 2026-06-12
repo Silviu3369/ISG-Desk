@@ -27,6 +27,18 @@ public sealed class SystemOverview
     /// time). Populated by the heavy tier; empty when Event Log isn't reachable.
     /// </summary>
     public IReadOnlyList<SystemOverviewEvent> RecentEvents { get; set; } = Array.Empty<SystemOverviewEvent>();
+
+    /// <summary>
+    /// Physical disks with their S.M.A.R.T.-backed health. Populated by the heavy tier
+    /// (MSFT_PhysicalDisk); empty when the Storage module isn't reachable.
+    /// </summary>
+    public IReadOnlyList<SystemOverviewDisk> Disks { get; set; } = Array.Empty<SystemOverviewDisk>();
+
+    /// <summary>
+    /// Fixed volumes with free-space usage. Populated by the fast tier (DriveInfo) so the
+    /// bars render even when PowerShell is unavailable.
+    /// </summary>
+    public IReadOnlyList<SystemOverviewVolume> Volumes { get; set; } = Array.Empty<SystemOverviewVolume>();
 }
 
 public sealed class SystemOverviewHardware
@@ -75,6 +87,15 @@ public sealed class SystemOverviewNetwork
 {
     public string AdapterName { get; set; } = "Unknown";
     public string ConnectionType { get; set; } = "Unknown";
+
+    /// <summary>
+    /// "Ethernet 2 · Ethernet" — collapses to a single value when the adapter is literally
+    /// named after its type (a Wi-Fi NIC named "Wi-Fi" would otherwise show "Wi-Fi · Wi-Fi").
+    /// </summary>
+    public string AdapterDisplay =>
+        string.Equals(AdapterName.Trim(), ConnectionType.Trim(), StringComparison.OrdinalIgnoreCase)
+            ? AdapterName.Trim()
+            : $"{AdapterName} · {ConnectionType}";
     public string Ipv4Address { get; set; } = "Unknown";
     public string SubnetPrefix { get; set; } = "Unknown";
     public string DefaultGateway { get; set; } = "Unknown";
@@ -127,4 +148,135 @@ public sealed class SystemOverviewEvent
 
     /// <summary>Severity key for the StatusBrush converter — Critical → red, Error → amber.</summary>
     public string Severity => string.Equals(Level, "Critical", StringComparison.OrdinalIgnoreCase) ? "Critical" : "Warning";
+}
+
+/// <summary>
+/// One physical disk with its S.M.A.R.T.-backed health readout. <see cref="HealthStatus"/> and
+/// <see cref="FailurePredicted"/> come from MSFT_PhysicalDisk / Win32_DiskDrive and are readable
+/// by standard users; Wear / Temperature / PowerOnHours come from MSFT_StorageReliabilityCounter,
+/// which usually needs administrator rights — <see cref="SmartAvailable"/> records whether those
+/// counters could be read so the UI can say "run as administrator" instead of showing blanks.
+/// </summary>
+public sealed class SystemOverviewDisk
+{
+    public string Model { get; set; } = "Unknown";
+    public string MediaType { get; set; } = "Unknown";      // "SSD" / "HDD" / "SCM" / "Unknown"
+    public string BusType { get; set; } = "Unknown";        // "NVMe" / "SATA" / "USB" / ...
+    public string Size { get; set; } = "Unknown";           // "477 GB"
+    public string SerialNumber { get; set; } = "Unknown";
+    public string HealthStatus { get; set; } = "Unknown";   // "Healthy" / "Warning" / "Unhealthy" / "Unknown"
+
+    /// <summary>S.M.A.R.T. failure prediction (OperationalStatus "Predictive Failure" or Win32_DiskDrive "Pred Fail").</summary>
+    public bool FailurePredicted { get; set; }
+
+    /// <summary>True when MSFT_StorageReliabilityCounter could be read (usually needs admin).</summary>
+    public bool SmartAvailable { get; set; }
+
+    /// <summary>SSD rated life used, 0–100 %. Null when the disk doesn't report it.</summary>
+    public int? WearPercent { get; set; }
+    public int? TemperatureC { get; set; }
+    public long? PowerOnHours { get; set; }
+
+    /// <summary>Rotational speed for HDDs (e.g. 5400 / 7200). Null for SSDs or when unknown.</summary>
+    public int? SpindleRpm { get; set; }
+
+    /// <summary>Traffic-light key for the StatusBrush converter.</summary>
+    public string Severity
+    {
+        get
+        {
+            if (FailurePredicted) return "Critical";
+            if (WearPercent is >= 95) return "Critical";
+            if (string.Equals(HealthStatus, "Unhealthy", StringComparison.OrdinalIgnoreCase)) return "Critical";
+            if (string.Equals(HealthStatus, "Warning", StringComparison.OrdinalIgnoreCase)) return "Warning";
+            if (WearPercent is >= 80) return "Warning";
+            return string.Equals(HealthStatus, "Healthy", StringComparison.OrdinalIgnoreCase) ? "OK" : "Unknown";
+        }
+    }
+
+    /// <summary>Text for the health pill — failure prediction overrides the plain health status.</summary>
+    public string HealthDisplay => FailurePredicted ? "Failure predicted" : HealthStatus;
+
+    /// <summary>"SSD · NVMe · 477 GB · SN ABC123" — only the parts that are actually known.</summary>
+    public string TypeLine
+    {
+        get
+        {
+            var parts = new List<string>(5);
+            if (IsKnown(MediaType)) parts.Add(MediaType);
+            if (IsKnown(BusType) && !string.Equals(BusType, MediaType, StringComparison.OrdinalIgnoreCase)) parts.Add(BusType);
+            if (IsKnown(Size)) parts.Add(Size);
+            if (SpindleRpm is int rpm) parts.Add($"{rpm} RPM");
+            if (IsKnown(SerialNumber)) parts.Add($"SN {SerialNumber}");
+            return parts.Count == 0 ? "Unknown" : string.Join(" · ", parts);
+        }
+    }
+
+    /// <summary>"34 °C · wear 4% used · 1,234 h powered on" or the requires-admin hint.</summary>
+    public string SmartDetail
+    {
+        get
+        {
+            if (!SmartAvailable)
+                return "S.M.A.R.T. counters unavailable — run as administrator for temperature / wear.";
+            var parts = new List<string>(3);
+            if (TemperatureC is int t) parts.Add($"{t} °C");
+            if (WearPercent is int w) parts.Add($"wear {w}% used");
+            if (PowerOnHours is long h) parts.Add($"{h:N0} h powered on");
+            return parts.Count == 0
+                ? "S.M.A.R.T. counters: no data reported by this disk."
+                : string.Join(" · ", parts);
+        }
+    }
+
+    private static bool IsKnown(string? value) =>
+        !string.IsNullOrWhiteSpace(value) && !value.Trim().Equals("Unknown", StringComparison.OrdinalIgnoreCase);
+}
+
+/// <summary>
+/// One fixed volume with raw byte counts so usage bars and free-space severity are computed
+/// here (testable) instead of in the UI. Gathered by the fast tier via DriveInfo — no admin,
+/// no PowerShell.
+/// </summary>
+public sealed class SystemOverviewVolume
+{
+    private const long CriticalFreeBytesFloor = 5L * 1024 * 1024 * 1024;   // < 5 GiB free is always Critical
+    private const long WarningFreeBytesFloor = 15L * 1024 * 1024 * 1024;   // < 15 GiB free is at least Warning
+
+    public string DriveLetter { get; set; } = "";    // "C:"
+    public string Label { get; set; } = "Local Disk";
+    public string FileSystem { get; set; } = "";     // "NTFS"
+    public long TotalBytes { get; set; }
+    public long FreeBytes { get; set; }
+    public bool IsSystemDrive { get; set; }
+
+    public double UsedPercent => TotalBytes <= 0 ? 0 : Math.Clamp(100.0 * (TotalBytes - FreeBytes) / TotalBytes, 0.0, 100.0);
+    public double FreePercent => TotalBytes <= 0 ? 0 : 100.0 - UsedPercent;
+
+    /// <summary>"228.9 GB free of 476.1 GB (48% free)".</summary>
+    public string UsageText => TotalBytes <= 0
+        ? "Unknown"
+        : $"{FormatSize(FreeBytes)} free of {FormatSize(TotalBytes)} ({FreePercent:0}% free)";
+
+    /// <summary>
+    /// Traffic-light key — Critical below 5 % or 5 GiB free (Windows updates start failing),
+    /// Warning below 12 % or 15 GiB free.
+    /// </summary>
+    public string Severity
+    {
+        get
+        {
+            if (TotalBytes <= 0) return "Unknown";
+            if (FreePercent < 5 || FreeBytes < CriticalFreeBytesFloor) return "Critical";
+            if (FreePercent < 12 || FreeBytes < WarningFreeBytesFloor) return "Warning";
+            return "OK";
+        }
+    }
+
+    private static string FormatSize(long bytes)
+    {
+        const double Gib = 1024d * 1024 * 1024;
+        var gb = bytes / Gib;
+        return gb >= 1024 ? $"{gb / 1024:0.##} TB" : $"{gb:0.#} GB";
+    }
 }

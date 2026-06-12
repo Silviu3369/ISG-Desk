@@ -50,8 +50,15 @@ public sealed partial class MainViewModel : PrintersViewModel.IHost
     public bool SaveSnmpCredentials { get => Printers.SaveSnmpCredentials; set => Printers.SaveSnmpCredentials = value; }
     public bool HasSavedSnmpCredentials => Printers.HasSavedSnmpCredentials;
     public bool ConfirmPrinterInstall { get => Printers.ConfirmPrinterInstall; set => Printers.ConfirmPrinterInstall = value; }
+    public bool SetDefaultAfterInstall { get => Printers.SetDefaultAfterInstall; set => Printers.SetDefaultAfterInstall = value; }
     public bool IsPrinterScanRunning => Printers.IsPrinterScanRunning;
     public bool IsPrinterSnmpIdentifyRunning => Printers.IsPrinterSnmpIdentifyRunning;
+
+    // === Printers-only scan filter (hides SNMP-confirmed non-printers) ===
+    public bool ShowOnlyPrinters { get => Printers.ShowOnlyPrinters; set => Printers.ShowOnlyPrinters = value; }
+    public IReadOnlyList<PrinterScanResult> FilteredScanResults => Printers.FilteredScanResults;
+    public string HiddenScanResultCountText => Printers.HiddenScanResultCountText;
+    public bool HasHiddenScanResults => Printers.HasHiddenScanResults;
 
     // === Command delegations (expression-bodied) ===
     public ICommand DetectPrinterIpCommand => Printers.DetectPrinterIpCommand;

@@ -1,4 +1,5 @@
 using System.Windows.Input;
+using NetScopeDiagnosticCenter.Collectors;
 using NetScopeDiagnosticCenter.Core;
 using NetScopeDiagnosticCenter.Core.Models;
 using NetScopeDiagnosticCenter.Infrastructure;
@@ -38,20 +39,23 @@ public sealed class LinkQualityViewModel : ObservableObject
     private readonly LinkQualityPingService _linkQualityPingService;
     private readonly LinkQualityDnsService _linkQualityDnsService;
     private readonly LinkQualityThresholds _linkQualityThresholds;
+    private readonly TraceRouteCollector? _traceRouteCollector;
     private readonly ILoggingService _logger;
     private readonly IHost _host;
 
     private LinkQualityResult _lastLinkQualityResult;
+    private TraceRouteResult? _lastTraceRoute;
     private CancellationTokenSource? _linkQualityCancellation;
     private string _linkQualityPingTarget = string.Empty;
     private string _linkQualityOperationStatus = "Idle. Run a ping test or path diagnostics manually.";
     private int _linkQualityPingSamples = 10;
     private bool _isLinkQualityRunning;
 
-    public LinkQualityViewModel(ILoggingService logger, IHost host)
+    public LinkQualityViewModel(ILoggingService logger, IHost host, TraceRouteCollector? traceRouteCollector = null)
     {
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _host = host ?? throw new ArgumentNullException(nameof(host));
+        _traceRouteCollector = traceRouteCollector;
 
         _linkQualityAnalyzer = new LinkQualityAnalyzer();
         _linkQualityPingService = new LinkQualityPingService();
@@ -62,6 +66,7 @@ public sealed class LinkQualityViewModel : ObservableObject
         RefreshLinkQualityCommand = new RelayCommand(_ => RefreshLinkQualitySnapshot(), _ => !IsLinkQualityRunning);
         RunLinkQualityPingCommand = new AsyncRelayCommand(_ => RunLinkQualityPingAsync(), _ => !IsLinkQualityRunning);
         RunLinkQualityPathDiagnosticsCommand = new AsyncRelayCommand(_ => RunLinkQualityPathDiagnosticsAsync(), _ => !IsLinkQualityRunning);
+        RunTraceRouteCommand = new AsyncRelayCommand(_ => RunTraceRouteAsync(), _ => !IsLinkQualityRunning && _traceRouteCollector is not null);
         CancelLinkQualityCommand = new RelayCommand(_ => CancelLinkQuality());
         ApplyLinkQualityTargetPresetCommand = new RelayCommand(ApplyLinkQualityTargetPreset, _ => !IsLinkQualityRunning);
         ApplyLinkQualitySamplePresetCommand = new RelayCommand(ApplyLinkQualitySamplePreset, _ => !IsLinkQualityRunning);
@@ -71,6 +76,7 @@ public sealed class LinkQualityViewModel : ObservableObject
     public ICommand RefreshLinkQualityCommand { get; }
     public ICommand RunLinkQualityPingCommand { get; }
     public ICommand RunLinkQualityPathDiagnosticsCommand { get; }
+    public ICommand RunTraceRouteCommand { get; }
     public ICommand CancelLinkQualityCommand { get; }
     public ICommand ApplyLinkQualityTargetPresetCommand { get; }
     public ICommand ApplyLinkQualitySamplePresetCommand { get; }
@@ -96,9 +102,12 @@ public sealed class LinkQualityViewModel : ObservableObject
                 OnPropertyChanged(nameof(LinkQualityPingButtonIcon));
                 OnPropertyChanged(nameof(LinkQualityPathButtonText));
                 OnPropertyChanged(nameof(LinkQualityPathButtonIcon));
+                OnPropertyChanged(nameof(TraceRouteButtonText));
+                OnPropertyChanged(nameof(TraceRouteButtonIcon));
                 (RefreshLinkQualityCommand as RelayCommand)?.RaiseCanExecuteChanged();
                 (RunLinkQualityPingCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
                 (RunLinkQualityPathDiagnosticsCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
+                (RunTraceRouteCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
                 (ApplyLinkQualityTargetPresetCommand as RelayCommand)?.RaiseCanExecuteChanged();
                 (ApplyLinkQualitySamplePresetCommand as RelayCommand)?.RaiseCanExecuteChanged();
             }
@@ -126,6 +135,28 @@ public sealed class LinkQualityViewModel : ObservableObject
     public string LinkQualityPingButtonIcon => IsLinkQualityRunning ? "\uE895" : "\uE701";
     public string LinkQualityPathButtonText => IsLinkQualityRunning ? "Running..." : "Run Gateway / DNS / Internet";
     public string LinkQualityPathButtonIcon => IsLinkQualityRunning ? "\uE895" : "\uE968";
+    public string TraceRouteButtonText => IsLinkQualityRunning ? "Running..." : "Trace Route";
+    public string TraceRouteButtonIcon => IsLinkQualityRunning ? "\uE895" : "\uE81B";
+
+    /// <summary>Latest manual traceroute (null until the first run this session).</summary>
+    public TraceRouteResult? LastTraceRoute
+    {
+        get => _lastTraceRoute;
+        private set
+        {
+            if (SetProperty(ref _lastTraceRoute, value))
+            {
+                OnPropertyChanged(nameof(HasTraceRoute));
+                OnPropertyChanged(nameof(NoTraceRoute));
+                OnPropertyChanged(nameof(TraceRouteHopCountText));
+            }
+        }
+    }
+
+    public bool HasTraceRoute => _lastTraceRoute is not null;
+    public bool NoTraceRoute => _lastTraceRoute is null;
+    public string TraceRouteHopCountText =>
+        _lastTraceRoute is null ? "0 hops" : FormatResultCount(_lastTraceRoute.Hops.Count, "hop", "hops");
 
     public bool HasLinkQualityPingResults => LastLinkQualityResult.PingResults.Count > 0;
     public bool HasNoLinkQualityPingResults => !HasLinkQualityPingResults;
@@ -391,6 +422,87 @@ public sealed class LinkQualityViewModel : ObservableObject
             {
                 LinkQualityOperationStatus = $"Path diagnostics failed: {ex.Message}";
                 _host.NotifyStatus($"Link Quality path diagnostics failed: {ex.Message}");
+            }
+        }
+        finally
+        {
+            linkQualityCancellation.Dispose();
+            if (ReferenceEquals(_linkQualityCancellation, linkQualityCancellation))
+            {
+                _linkQualityCancellation = null;
+                IsLinkQualityRunning = false;
+            }
+
+            _host.NotifyBusy(false);
+        }
+    }
+
+    /// <summary>
+    /// Manual hop-by-hop traceroute to the current target (or the internet beacon when
+    /// the field is empty). Shows WHERE the path breaks — local switch/gateway vs ISP —
+    /// without waiting for Quick Diagnosis to detect an outage first.
+    /// </summary>
+    public async Task RunTraceRouteAsync()
+    {
+        if (_traceRouteCollector is null)
+        {
+            _host.NotifyStatus("Traceroute is not available in this build.");
+            return;
+        }
+
+        var target = LinkQualityPingTarget.Trim();
+        if (string.IsNullOrWhiteSpace(target))
+        {
+            target = DiagnosticConstants.InternetPingTargets.FirstOrDefault() ?? "1.1.1.1";
+        }
+
+        if (!DiagnosticTargetValidator.TryNormalizeHost(target, out var normalizedTarget, out var reason))
+        {
+            _host.NotifyStatus(reason);
+            LinkQualityOperationStatus = reason;
+            return;
+        }
+
+        CancelQuietly(_linkQualityCancellation);
+        var linkQualityCancellation = new CancellationTokenSource();
+        _linkQualityCancellation = linkQualityCancellation;
+        var token = linkQualityCancellation.Token;
+        IsLinkQualityRunning = true;
+        _host.NotifyBusy(true);
+        LinkQualityOperationStatus = $"Tracing route to {normalizedTarget} (bounded, max 15 hops)...";
+        _host.NotifyStatus($"Tracing route to {normalizedTarget}...");
+        _logger.Info($"Manual traceroute started. Target={normalizedTarget}.");
+
+        try
+        {
+            var trace = await _traceRouteCollector.TraceAsync(normalizedTarget, token);
+            if (!ReferenceEquals(_linkQualityCancellation, linkQualityCancellation))
+            {
+                return;
+            }
+
+            LastTraceRoute = trace;
+            LinkQualityOperationStatus = $"Last traceroute: {trace.Status}; {trace.Summary}";
+            _logger.Info($"Manual traceroute completed. Target={normalizedTarget}; Status={trace.Status}; Hops={trace.Hops.Count}; Reached={trace.ReachedTarget}.");
+            _host.NotifyStatus($"Traceroute completed: {trace.Status}; {trace.Summary}");
+        }
+        catch (OperationCanceledException)
+        {
+            if (ReferenceEquals(_linkQualityCancellation, linkQualityCancellation))
+            {
+                LinkQualityOperationStatus = "Traceroute cancelled by user.";
+                _host.NotifyStatus("Traceroute cancelled.");
+            }
+
+            _logger.Info($"Manual traceroute cancelled. Target={normalizedTarget}.");
+        }
+        catch (Exception ex)
+        {
+            _logger.Error("Manual traceroute failed.", ex);
+            if (ReferenceEquals(_linkQualityCancellation, linkQualityCancellation))
+            {
+                LinkQualityOperationStatus = $"Traceroute failed: {ex.Message}";
+                _host.NotifyStatus($"Traceroute failed: {ex.Message}");
             }
         }
         finally

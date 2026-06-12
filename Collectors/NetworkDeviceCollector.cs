@@ -184,7 +184,7 @@ public class NetworkDeviceCollector : JsonCollectorBase
             };
         }
 
-        evidence.Add($"Scanning {parse.Source} for devices responding to {options.Protocol} on UDP 161.");
+        evidence.Add($"Discovery scan of {parse.Source}: ping sweep + neighbor table + names + signature ports, then {options.Protocol} identity where available.");
         evidence.Add($"Scan host count: {parse.Hosts.Count}; safety limit: {DefaultMaxScanHosts}.");
 
         var scanResult = new NetworkDeviceScanResult
@@ -207,8 +207,9 @@ public class NetworkDeviceCollector : JsonCollectorBase
             IsRunning = true,
             Limitations =
             [
-                "LAN scan only confirms devices that respond to the selected SNMP protocol.",
-                "Hosts with SNMP disabled, blocked, or using different credentials will not appear.",
+                "Device types without SNMP identity are heuristic (ports, MAC vendor, names) — treat 'Probably …' labels as hints.",
+                "Hosts that block ping AND have no ARP entry cannot be discovered.",
+                "Physical location cannot be detected from the network: it comes from SNMP sysLocation or the technician's saved label.",
                 "The scan is read-only and limited to 256 private IPv4 addresses."
             ]
         };
@@ -220,79 +221,386 @@ public class NetworkDeviceCollector : JsonCollectorBase
         var failedHosts = 0;
         progress?.Invoke(Snapshot(scanResult));
 
-        using var concurrency = new SemaphoreSlim(24);
-        var tasks = parse.Hosts.Select(async address =>
+        // ---- Tier 1: parallel ping sweep. Finds every live host (and primes the OS
+        // ARP cache so the neighbor table below knows their MAC addresses). ----
+        var reachable = new HashSet<string>(StringComparer.Ordinal);
+        using (var sweepConcurrency = new SemaphoreSlim(48))
         {
-            await concurrency.WaitAsync(cancellationToken);
-            var shouldPublish = false;
-            try
+            var sweepTasks = parse.Hosts.Select(async address =>
             {
-                var result = await CollectAsync(ForTarget(options, address.ToString()), includeInterfaces: false, includeDiagnostics: false, cancellationToken);
-                lock (sync)
+                await sweepConcurrency.WaitAsync(cancellationToken);
+                var shouldPublish = false;
+                try
                 {
-                    scannedHosts++;
-                    if (result.Identity?.Success == true)
+                    var ping = await ProbePingAsync(address, samples: 1, cancellationToken);
+                    lock (sync)
                     {
-                        devices.Add(result);
-                        shouldPublish = true;
+                        scannedHosts++;
+                        if (ping.PacketLoss.Received > 0)
+                        {
+                            reachable.Add(address.ToString());
+                        }
+
+                        UpdateScanProgress(scanResult, devices, scannedHosts, timedOutHosts, failedHosts, isRunning: true);
+                        shouldPublish = scannedHosts == 1 || scannedHosts % 16 == 0 || scannedHosts == parse.Hosts.Count;
                     }
-                    else if (string.Equals(result.SnmpStatus, "Timeout", StringComparison.OrdinalIgnoreCase))
+                }
+                catch (Exception) when (!cancellationToken.IsCancellationRequested)
+                {
+                    lock (sync)
                     {
-                        timedOutHosts++;
+                        scannedHosts++;
+                        failedHosts++;
+                        UpdateScanProgress(scanResult, devices, scannedHosts, timedOutHosts, failedHosts, isRunning: true);
                     }
-                    else
+                }
+                finally
+                {
+                    sweepConcurrency.Release();
+                }
+
+                if (shouldPublish)
+                {
+                    progress?.Invoke(Snapshot(scanResult));
+                }
+            });
+            await Task.WhenAll(sweepTasks);
+        }
+
+        // One neighbor-table readout for the whole range (instead of 254 per-host calls):
+        // picks up MACs for every swept host, including ones that block ICMP.
+        var neighbors = await ReadNeighborTableAsync(cancellationToken);
+        var liveHosts = parse.Hosts
+            .Where(address => reachable.Contains(address.ToString()) || neighbors.ContainsKey(address.ToString()))
+            .ToList();
+        lock (sync)
+        {
+            scanResult.Evidence.Add($"Ping sweep: {reachable.Count} host(s) replied; neighbor table added {liveHosts.Count - reachable.Count(address => liveHosts.Any(live => live.ToString() == address))} more with a known MAC.");
+            scanResult.Evidence.Add($"Live hosts to identify: {liveHosts.Count}.");
+        }
+
+        // ---- Tier 2: enrich each live host — names, vendor, signature ports, and an
+        // SNMP attempt for infrastructure identity. SNMP is a bonus, not a requirement. ----
+        using (var enrichConcurrency = new SemaphoreSlim(12))
+        {
+            var enrichTasks = liveHosts.Select(async address =>
+            {
+                await enrichConcurrency.WaitAsync(cancellationToken);
+                try
+                {
+                    var device = await EnrichDiscoveredHostAsync(
+                        address,
+                        neighbors,
+                        reachable.Contains(address.ToString()),
+                        localRange?.Gateway ?? scanResult.Gateway,
+                        options,
+                        cancellationToken);
+                    ApplySelfIdentity(device, localRange?.LocalIpAddress ?? scanResult.LocalIpAddress, Environment.MachineName);
+                    lock (sync)
+                    {
+                        devices.Add(device);
+                        if (string.Equals(device.SnmpStatus, "Timeout", StringComparison.OrdinalIgnoreCase))
+                        {
+                            timedOutHosts++;
+                        }
+
+                        UpdateScanProgress(scanResult, devices, scannedHosts, timedOutHosts, failedHosts, isRunning: true);
+                    }
+
+                    progress?.Invoke(Snapshot(scanResult));
+                }
+                catch (Exception) when (!cancellationToken.IsCancellationRequested)
+                {
+                    lock (sync)
                     {
                         failedHosts++;
+                        UpdateScanProgress(scanResult, devices, scannedHosts, timedOutHosts, failedHosts, isRunning: true);
                     }
-
-                    UpdateScanProgress(scanResult, devices, scannedHosts, timedOutHosts, failedHosts, isRunning: true);
-                    shouldPublish = shouldPublish || scannedHosts == 1 || scannedHosts % 8 == 0 || scannedHosts == parse.Hosts.Count;
                 }
-            }
-            catch (TimeoutException)
-            {
-                lock (sync)
+                finally
                 {
-                    scannedHosts++;
-                    timedOutHosts++;
-                    UpdateScanProgress(scanResult, devices, scannedHosts, timedOutHosts, failedHosts, isRunning: true);
-                    shouldPublish = scannedHosts == 1 || scannedHosts % 8 == 0 || scannedHosts == parse.Hosts.Count;
+                    enrichConcurrency.Release();
                 }
-            }
-            catch (Exception) when (!cancellationToken.IsCancellationRequested)
-            {
-                lock (sync)
-                {
-                    scannedHosts++;
-                    failedHosts++;
-                    UpdateScanProgress(scanResult, devices, scannedHosts, timedOutHosts, failedHosts, isRunning: true);
-                    shouldPublish = scannedHosts == 1 || scannedHosts % 8 == 0 || scannedHosts == parse.Hosts.Count;
-                }
-            }
-            finally
-            {
-                concurrency.Release();
-            }
-
-            if (shouldPublish)
-            {
-                progress?.Invoke(Snapshot(scanResult));
-            }
-        });
-
-        await Task.WhenAll(tasks);
+            });
+            await Task.WhenAll(enrichTasks);
+        }
 
         lock (sync)
         {
             UpdateScanProgress(scanResult, devices, scannedHosts, timedOutHosts, failedHosts, isRunning: false);
+            var snmpCount = scanResult.Devices.Count(device => device.Identity?.Success == true);
             scanResult.Verdict = scanResult.Devices.Count > 0
-                ? $"Found {scanResult.Devices.Count} SNMP network devices."
-                : $"No SNMP devices responded in {parse.Source}.";
+                ? $"Found {scanResult.Devices.Count} device(s) in {parse.Source}; {snmpCount} answered SNMP."
+                : $"No live devices found in {parse.Source}.";
             scanResult.Severity = scanResult.Devices.Count > 0 ? "OK" : "Warning";
         }
 
         progress?.Invoke(Snapshot(scanResult));
         return Snapshot(scanResult);
+    }
+
+    /// <summary>TCP signature ports probed per discovered host — each implies a device family.</summary>
+    private static readonly int[] DiscoveryTcpPorts = [22, 80, 443, 445, 3389, 8009, 9100];
+
+    /// <summary>
+    /// The scanning machine itself shows up in its own scan; without this the row reads
+    /// like a foreign device ("Silviu.telenet.be — PC / NAS (SMB)") and confuses the
+    /// technician. Public + pure so the rule is test-pinned.
+    /// </summary>
+    public static void ApplySelfIdentity(NetworkDeviceResult device, string? localIp, string machineName)
+    {
+        if (string.IsNullOrWhiteSpace(localIp) ||
+            !string.Equals(device.Address.Trim(), localIp.Trim(), StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        device.NetBiosName = machineName;
+        device.DeviceType = "This PC (running the scan)";
+        device.ClassificationConfidence = "High";
+        device.ConfirmationStatus = "This computer";
+        device.Evidence.Insert(0, $"This is the computer running the scan ({machineName}).");
+    }
+
+    /// <summary>Builds the full device row for one live host (tier 2 of the scan).</summary>
+    private async Task<NetworkDeviceResult> EnrichDiscoveredHostAsync(
+        IPAddress address,
+        IReadOnlyDictionary<string, NeighborTableEntry> neighbors,
+        bool pingReachable,
+        string gateway,
+        SnmpSessionOptions options,
+        CancellationToken cancellationToken)
+    {
+        var ipText = address.ToString();
+        var result = new NetworkDeviceResult
+        {
+            Target = ipText,
+            Address = ipText,
+            PingReachable = pingReachable,
+            PingStatus = pingReachable ? "OK" : "Unknown",
+            IsGateway = !string.IsNullOrWhiteSpace(gateway) && string.Equals(gateway.Trim(), ipText, StringComparison.Ordinal),
+            Verdict = "Online",
+            Severity = "OK"
+        };
+        result.Evidence.Add(pingReachable
+            ? "ICMP ping replied during the discovery sweep."
+            : "No ICMP reply, but the host has an ARP/neighbor entry (likely blocks ping).");
+
+        if (neighbors.TryGetValue(ipText, out var neighbor))
+        {
+            result.MacAddress = neighbor.Mac;
+            result.NeighborState = neighbor.State;
+            result.NeighborInterface = neighbor.InterfaceAlias;
+            result.MacVendor = ResolveMacVendor(neighbor.Mac);
+            result.Evidence.Add($"MAC {result.MacAddress}{(string.IsNullOrWhiteSpace(result.MacVendor) ? string.Empty : $" ({result.MacVendor})")} from the neighbor table.");
+        }
+
+        result.ReverseDnsName = await TryReverseDnsAsync(address, cancellationToken);
+        result.NetBiosName = await NetBiosNameResolver.ResolveAsync(ipText, cancellationToken) ?? string.Empty;
+        if (!string.IsNullOrWhiteSpace(result.ReverseDnsName))
+        {
+            result.Evidence.Add($"Reverse DNS: {result.ReverseDnsName}.");
+        }
+        if (!string.IsNullOrWhiteSpace(result.NetBiosName))
+        {
+            result.Evidence.Add($"NetBIOS name: {result.NetBiosName}.");
+        }
+
+        result.Ports = (await Task.WhenAll(DiscoveryTcpPorts.Select(port => ProbeTcpPortAsync(address, port, cancellationToken))))
+            .OrderBy(port => port.Port)
+            .ToList();
+
+        // SNMP attempt — infrastructure answers with full identity, everything else times out quietly.
+        try
+        {
+            var snmp = await CollectAsync(ForTarget(options, ipText), includeInterfaces: false, includeDiagnostics: false, cancellationToken);
+            result.SnmpStatus = snmp.SnmpStatus;
+            result.SnmpProtocol = snmp.SnmpProtocol;
+            result.SnmpCommunityMasked = snmp.SnmpCommunityMasked;
+            if (snmp.Identity?.Success == true)
+            {
+                result.Identity = snmp.Identity;
+                result.Evidence.Add($"SNMP identity: {snmp.Identity.SysNameDisplay}; location: {snmp.Identity.SysLocationDisplay}.");
+            }
+        }
+        catch (TimeoutException)
+        {
+            result.SnmpStatus = "Timeout";
+        }
+
+        result.DeviceType = ClassifyDiscoveredDevice(result, out var classificationConfidence);
+        result.ClassificationConfidence = classificationConfidence;
+        result.ConfirmationStatus = result.Identity?.Success == true
+            ? "Confirmed by SNMP identity"
+            : "Heuristic (ports / vendor / names)";
+        return result;
+    }
+
+    /// <summary>
+    /// Honest multi-signal classification for discovered hosts: SNMP identity wins,
+    /// then port signatures, then MAC-vendor / name hints (worded as "Probably …").
+    /// Public and pure so tests can pin the decision table.
+    /// </summary>
+    public static string ClassifyDiscoveredDevice(NetworkDeviceResult result, out string confidence)
+    {
+        if (result.Identity?.Success == true)
+        {
+            confidence = "High";
+            return ClassifyDevice(result.Identity, result);
+        }
+
+        bool Open(int port) => result.Ports.Any(item => item.Port == port && item.TcpSucceeded);
+
+        if (Open(9100))
+        {
+            confidence = "High";
+            return "Printer";
+        }
+
+        if (result.IsGateway)
+        {
+            confidence = "High";
+            return "Router / gateway";
+        }
+
+        if (Open(3389) || (Open(445) && !string.IsNullOrWhiteSpace(result.NetBiosName)))
+        {
+            confidence = "Medium";
+            return "Windows PC / server";
+        }
+
+        if (Open(445))
+        {
+            confidence = "Medium";
+            return "PC / NAS (SMB)";
+        }
+
+        if (Open(8009))
+        {
+            confidence = "Medium";
+            return "TV / media (cast)";
+        }
+
+        if (Open(22) && (Open(80) || Open(443)))
+        {
+            confidence = "Medium";
+            return "Network device / managed host";
+        }
+
+        var hints = $"{result.MacVendor} {result.ReverseDnsName} {result.NetBiosName}".ToLowerInvariant();
+        var vendorGuess = GuessTypeFromVendorHints(hints);
+        if (vendorGuess is not null)
+        {
+            confidence = "Low";
+            return vendorGuess;
+        }
+
+        if (!string.IsNullOrWhiteSpace(result.NetBiosName))
+        {
+            confidence = "Medium";
+            return "Windows PC";
+        }
+
+        if (Open(80) || Open(443))
+        {
+            confidence = "Low";
+            return "Device with web interface";
+        }
+
+        confidence = "Low";
+        return "Unknown device (online)";
+    }
+
+    private static string? GuessTypeFromVendorHints(string hints)
+    {
+        if (ContainsAny(hints, "apple"))
+            return "Apple device (iPhone/iPad/Mac)";
+        if (ContainsAny(hints, "samsung", "xiaomi", "huawei", "oneplus", "oppo", "vivo", "realme", "motorola", "honor"))
+            return "Probably phone / tablet";
+        if (ContainsAny(hints, "raspberry"))
+            return "Raspberry Pi / IoT";
+        if (ContainsAny(hints, "espressif", "tuya", "sonoff", "shelly", "broadlink", "tasmota"))
+            return "IoT / smart home";
+        if (ContainsAny(hints, "amazon"))
+            return "Smart speaker / TV stick";
+        if (ContainsAny(hints, "google"))
+            return "Chromecast / Nest";
+        if (ContainsAny(hints, "sony", "lg electronics", "tcl", "vestel", "hisense", "panasonic", "philips"))
+            return "TV / media";
+        if (ContainsAny(hints, "tp-link", "ubiquiti", "mikrotik", "d-link", "netgear", "zyxel", "aruba", "cisco", "juniper", "ruckus"))
+            return "Probably network device";
+        if (ContainsAny(hints, "hewlett", "hp inc", "canon", "epson", "brother", "kyocera", "lexmark", "ricoh", "xerox", "konica", "zebra"))
+            return "Probably printer";
+        if (ContainsAny(hints, "intel corporate", "azurewave", "liteon", "killer"))
+            return "PC / laptop";
+        return null;
+    }
+
+    /// <summary>Full OUI database from the Wi-Fi module first; tiny built-in table as fallback.</summary>
+    private static string ResolveMacVendor(string macAddress)
+    {
+        if (string.IsNullOrWhiteSpace(macAddress))
+        {
+            return string.Empty;
+        }
+
+        return Core.Wifi.WifiOuiLookup.Lookup(macAddress) ?? LookupMacVendor(macAddress);
+    }
+
+    private sealed record NeighborTableEntry(string Mac, string State, string InterfaceAlias);
+
+    /// <summary>One bulk neighbor-table readout — ip → (MAC, state, interface).</summary>
+    private async Task<IReadOnlyDictionary<string, NeighborTableEntry>> ReadNeighborTableAsync(CancellationToken cancellationToken)
+    {
+        const string script = """
+$ErrorActionPreference = 'SilentlyContinue'
+$rows = Get-NetNeighbor -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+    Where-Object {
+        $_.LinkLayerAddress -and
+        $_.LinkLayerAddress -ne '00-00-00-00-00-00' -and
+        $_.State -in 'Reachable','Stale','Permanent','Delay','Probe'
+    } |
+    ForEach-Object { [pscustomobject]@{ Ip = [string]$_.IPAddress; Mac = [string]$_.LinkLayerAddress; State = [string]$_.State; InterfaceAlias = [string]$_.InterfaceAlias } }
+$json = $rows | ConvertTo-Json -Depth 3 -Compress
+if (-not $json) { '[]' } elseif ($json[0] -ne '[') { "[$json]" } else { $json }
+""";
+
+        try
+        {
+            var rows = await RunCollectorAsync<NeighborTableRow[]>(script, TimeSpan.FromSeconds(10), cancellationToken)
+                       ?? [];
+            var map = new Dictionary<string, NeighborTableEntry>(StringComparer.Ordinal);
+            foreach (var row in rows)
+            {
+                if (string.IsNullOrWhiteSpace(row.Ip) || string.IsNullOrWhiteSpace(row.Mac))
+                {
+                    continue;
+                }
+
+                map[row.Ip.Trim()] = new NeighborTableEntry(
+                    row.Mac.Trim().Replace('-', ':').ToUpperInvariant(),
+                    row.State ?? string.Empty,
+                    row.InterfaceAlias ?? string.Empty);
+            }
+
+            return map;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch
+        {
+            return new Dictionary<string, NeighborTableEntry>(StringComparer.Ordinal);
+        }
+    }
+
+    private sealed class NeighborTableRow
+    {
+        public string? Ip { get; set; }
+        public string? Mac { get; set; }
+        public string? State { get; set; }
+        public string? InterfaceAlias { get; set; }
     }
 
     private static void UpdateScanProgress(

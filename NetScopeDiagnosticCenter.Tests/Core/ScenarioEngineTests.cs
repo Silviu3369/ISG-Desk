@@ -155,6 +155,120 @@ public sealed class ScenarioEngineTests
         result.Severity.Should().Be("Warning");
     }
 
+    [Fact]
+    public async Task RunAsync_DnsDomainJoined_BrokenSecureChannel_ReturnsTrustVerdict()
+    {
+        var targetCollector = new FakeTargetConnectivityCollector(target => HealthyProbe(target, [88, 389, 445]));
+        var domainCollector = new FakeDomainCollector(
+            new DomainInfo
+            {
+                IsDomainJoined = true,
+                DomainName = "contoso.local",
+                LogonServer = "DC01"
+            },
+            new SecureChannelCheckResult
+            {
+                Status = "Critical",
+                Detail = "Secure channel verification FAILED - the machine account trust with the domain is broken."
+            });
+        var engine = new ScenarioEngine(targetCollector, domainCollector);
+
+        var result = await engine.RunAsync(
+            ScenarioWorkflow.DnsDomain,
+            new NetworkDiagnosisResult(),
+            new NetworkProfile(),
+            new WorkflowInput());
+
+        result.Title.Should().Be("Machine account trust with the domain is broken");
+        result.Severity.Should().Be("Critical");
+        result.Steps.Should().Contain(step => step.Name == "Machine account trust" && step.Status == "Critical");
+        result.NextChecks.Should().ContainSingle(check => check.Contains("Test-ComputerSecureChannel -Repair"));
+    }
+
+    [Fact]
+    public async Task RunAsync_DnsDomainJoined_TrustUnknownWithoutAdmin_StaysHealthyWithCaveat()
+    {
+        var targetCollector = new FakeTargetConnectivityCollector(target => HealthyProbe(target, [88, 389, 445]));
+        var domainCollector = new FakeDomainCollector(
+            new DomainInfo
+            {
+                IsDomainJoined = true,
+                DomainName = "contoso.local",
+                LogonServer = "DC01"
+            },
+            new SecureChannelCheckResult
+            {
+                Status = "Unknown",
+                Detail = "Secure channel check needs administrator rights - relaunch elevated to verify the machine account trust."
+            });
+        var engine = new ScenarioEngine(targetCollector, domainCollector);
+
+        var result = await engine.RunAsync(
+            ScenarioWorkflow.DnsDomain,
+            new NetworkDiagnosisResult(),
+            new NetworkProfile(),
+            new WorkflowInput());
+
+        result.Title.Should().Be("DNS and domain connectivity look healthy (trust not verified)");
+        result.Severity.Should().Be("OK");
+        result.Steps.Should().Contain(step => step.Name == "Machine account trust" && step.Status == "Unknown");
+    }
+
+    [Fact]
+    public async Task RunAsync_DnsDomainJoined_NoConfiguredTargets_UsesSrvDiscoveredControllers()
+    {
+        var targetCollector = new FakeTargetConnectivityCollector(target => HealthyProbe(target, [88, 389, 445]));
+        var domainCollector = new FakeDomainCollector(new DomainInfo
+        {
+            IsDomainJoined = true,
+            DomainName = "contoso.local",
+            LogonServer = "Unknown"
+        });
+        var discovery = new FakeDcDiscoveryCollector(new DomainControllerDiscoveryResult
+        {
+            Verdict = "Found 2 domain controller candidate(s) from DNS SRV.",
+            Severity = "OK",
+            Candidates =
+            [
+                new DomainControllerCandidate { Host = "dc01.contoso.local", DomainName = "contoso.local" },
+                new DomainControllerCandidate { Host = "dc02.contoso.local", DomainName = "contoso.local" }
+            ]
+        });
+        var engine = new ScenarioEngine(targetCollector, domainCollector, discovery);
+
+        var result = await engine.RunAsync(
+            ScenarioWorkflow.DnsDomain,
+            new NetworkDiagnosisResult(),
+            new NetworkProfile(),
+            new WorkflowInput());
+
+        discovery.QueriedDomains.Should().ContainSingle("contoso.local");
+        targetCollector.ProbedHosts.Should().BeEquivalentTo("dc01.contoso.local", "dc02.contoso.local");
+        result.Evidence.Should().Contain(line => line.Contains("DNS SRV discovery"));
+        result.Title.Should().Be("DNS and domain connectivity look healthy");
+    }
+
+    [Fact]
+    public async Task RunAsync_DnsDomainWorkgroup_SkipsSecureChannelStep()
+    {
+        var targetCollector = new FakeTargetConnectivityCollector(target => HealthyProbe(target, [88, 389, 445]));
+        var domainCollector = new FakeDomainCollector(new DomainInfo
+        {
+            IsDomainJoined = false,
+            DomainName = "Not domain joined",
+            LogonServer = "Not domain joined"
+        });
+        var engine = new ScenarioEngine(targetCollector, domainCollector);
+
+        var result = await engine.RunAsync(
+            ScenarioWorkflow.DnsDomain,
+            new NetworkDiagnosisResult(),
+            new NetworkProfile(),
+            new WorkflowInput { DomainControllerOverride = "dc01.contoso.local" });
+
+        result.Steps.Should().NotContain(step => step.Name == "Machine account trust");
+    }
+
     private static TargetProbeResult HealthyProbe(DiagnosticTarget target, IReadOnlyList<int> ports) => new()
     {
         Target = target,
@@ -206,14 +320,45 @@ public sealed class ScenarioEngineTests
     {
         private readonly DomainInfo _domain;
 
-        public FakeDomainCollector(DomainInfo domain)
+        public FakeDomainCollector(DomainInfo domain, SecureChannelCheckResult? secureChannel = null)
             : base(new PowerShellRunner(new NullLogger()))
         {
             _domain = domain;
+            SecureChannel = secureChannel ?? new SecureChannelCheckResult
+            {
+                Status = "OK",
+                Detail = "Machine account secure channel to the domain verified successfully."
+            };
         }
+
+        public SecureChannelCheckResult SecureChannel { get; set; }
 
         public override Task<DomainInfo> GetDomainInfoAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult(_domain);
+
+        public override Task<SecureChannelCheckResult> TestSecureChannelAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult(SecureChannel);
+    }
+
+    private sealed class FakeDcDiscoveryCollector : DomainControllerDiscoveryCollector
+    {
+        private readonly DomainControllerDiscoveryResult _result;
+
+        public FakeDcDiscoveryCollector(DomainControllerDiscoveryResult result)
+            : base(new PowerShellRunner(new NullLogger()))
+        {
+            _result = result;
+        }
+
+        public List<string> QueriedDomains { get; } = [];
+
+        public override Task<DomainControllerDiscoveryResult> DiscoverAsync(
+            IEnumerable<string> domainNames,
+            CancellationToken cancellationToken = default)
+        {
+            QueriedDomains.AddRange(domainNames);
+            return Task.FromResult(_result);
+        }
     }
 
     private sealed class NullLogger : ILoggingService

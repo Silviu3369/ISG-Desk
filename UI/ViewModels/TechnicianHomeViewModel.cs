@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Windows;
 using System.Windows.Input;
@@ -48,6 +49,9 @@ public sealed class TechnicianHomeViewModel : ObservableObject
         OpenEventViewerCommand = new RelayCommand(_ => OpenWindowsTool("eventvwr.msc", "Event Viewer"));
         OpenWindowsSecurityCommand = new RelayCommand(_ => OpenWindowsTool("windowsdefender:", "Windows Security"));
         OpenSystemAboutCommand = new RelayCommand(_ => OpenWindowsTool("ms-settings:about", "System About"));
+        OpenDiskManagementCommand = new RelayCommand(_ => OpenWindowsTool("diskmgmt.msc", "Disk Management"));
+        OpenTaskManagerCommand = new RelayCommand(_ => OpenWindowsTool("taskmgr.exe", "Task Manager"));
+        RestartAsAdminCommand = new RelayCommand(_ => RestartAsAdministrator());
     }
 
     public SystemOverview Overview
@@ -68,8 +72,16 @@ public sealed class TechnicianHomeViewModel : ObservableObject
                 OnPropertyChanged(nameof(RecentEvents));
                 OnPropertyChanged(nameof(HasRecentEvents));
                 OnPropertyChanged(nameof(NoRecentEvents));
+                OnPropertyChanged(nameof(Disks));
+                OnPropertyChanged(nameof(Volumes));
+                OnPropertyChanged(nameof(HasDisks));
+                OnPropertyChanged(nameof(NoDisks));
+                OnPropertyChanged(nameof(HasVolumes));
+                OnPropertyChanged(nameof(StorageSummary));
+                OnPropertyChanged(nameof(StorageSeverity));
                 OnPropertyChanged(nameof(PrivilegeSummary));
                 OnPropertyChanged(nameof(PrivilegeSeverity));
+                OnPropertyChanged(nameof(ShowRestartAsAdmin));
                 OnPropertyChanged(nameof(NetworkSummary));
                 OnPropertyChanged(nameof(NetworkPostureSeverity));
                 OnPropertyChanged(nameof(SecuritySummary));
@@ -103,6 +115,56 @@ public sealed class TechnicianHomeViewModel : ObservableObject
     public bool HasRecentEvents => _overview.RecentEvents.Count > 0;
     public bool NoRecentEvents => _overview.RecentEvents.Count == 0;
 
+    /// <summary>Physical disks with S.M.A.R.T. health (heavy tier).</summary>
+    public IReadOnlyList<SystemOverviewDisk> Disks => _overview.Disks;
+
+    /// <summary>Fixed volumes with usage (fast tier — always available).</summary>
+    public IReadOnlyList<SystemOverviewVolume> Volumes => _overview.Volumes;
+
+    public bool HasDisks => _overview.Disks.Count > 0;
+    public bool NoDisks => _overview.Disks.Count == 0;
+    public bool HasVolumes => _overview.Volumes.Count > 0;
+
+    /// <summary>Worst severity across all disks and volumes — drives the STORAGE status tile.</summary>
+    public string StorageSeverity
+    {
+        get
+        {
+            if (!_loadedOnce) return "Unknown";
+            var all = _overview.Disks.Select(d => d.Severity)
+                .Concat(_overview.Volumes.Select(v => v.Severity))
+                .ToArray();
+            return all.Length == 0 ? "Unknown" : WorstSeverity(all);
+        }
+    }
+
+    public string StorageSummary
+    {
+        get
+        {
+            if (!_loadedOnce) return "Unknown";
+            if (_overview.Disks.Count == 0 && _overview.Volumes.Count == 0) return "No disk data yet";
+
+            var parts = new List<string>(2);
+            if (_overview.Disks.Count > 0)
+            {
+                var attention = _overview.Disks.Count(d => d.Severity is "Critical" or "Warning");
+                parts.Add(attention == 0
+                    ? $"{_overview.Disks.Count} disk(s) healthy"
+                    : $"{attention} of {_overview.Disks.Count} disk(s) need attention");
+            }
+
+            var systemVolume = _overview.Volumes.FirstOrDefault(v => v.IsSystemDrive)
+                               ?? _overview.Volumes.FirstOrDefault();
+            if (systemVolume is not null)
+            {
+                parts.Add($"{systemVolume.DriveLetter} {systemVolume.FreePercent:0}% free");
+            }
+
+            return parts.Count == 0 ? "Unknown" : string.Join(" · ", parts);
+        }
+    }
+
     public string PrivilegeSummary => JoinKnown(User.AdminRights, User.Elevated);
 
     public string PrivilegeSeverity
@@ -116,6 +178,13 @@ public sealed class TechnicianHomeViewModel : ObservableObject
             return "Critical";
         }
     }
+
+    /// <summary>
+    /// True once the snapshot shows the process is NOT elevated — surfaces the
+    /// "Restart as administrator" action that unlocks BitLocker / TPM / S.M.A.R.T. counters.
+    /// </summary>
+    public bool ShowRestartAsAdmin =>
+        _loadedOnce && User.Elevated.StartsWith("No", StringComparison.OrdinalIgnoreCase);
 
     public string NetworkSummary => JoinKnown(
         Network.ConnectionType,
@@ -279,6 +348,9 @@ public sealed class TechnicianHomeViewModel : ObservableObject
     public ICommand OpenEventViewerCommand { get; }
     public ICommand OpenWindowsSecurityCommand { get; }
     public ICommand OpenSystemAboutCommand { get; }
+    public ICommand OpenDiskManagementCommand { get; }
+    public ICommand OpenTaskManagerCommand { get; }
+    public ICommand RestartAsAdminCommand { get; }
 
     // ---- Last-diagnosis projection (read-only, from the host). ----
 
@@ -383,6 +455,42 @@ public sealed class TechnicianHomeViewModel : ObservableObject
             line);
     }
 
+    /// <summary>
+    /// Relaunches the app elevated (UAC prompt) and closes this instance. A declined
+    /// prompt (Win32 error 1223) is reported as a warning, never as a crash.
+    /// </summary>
+    private void RestartAsAdministrator()
+    {
+        var exePath = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(exePath))
+        {
+            AddActivity("Could not determine the application path for elevation", ActivityStatus.Error);
+            return;
+        }
+
+        try
+        {
+            Process.Start(new ProcessStartInfo(exePath)
+            {
+                UseShellExecute = true,
+                Verb = "runas",
+                WorkingDirectory = AppContext.BaseDirectory
+            });
+            AddActivity("Restarting with administrator rights…", ActivityStatus.Info);
+            Application.Current?.Shutdown();
+        }
+        catch (Win32Exception ex) when (ex.NativeErrorCode == 1223)
+        {
+            // ERROR_CANCELLED — the technician dismissed the UAC prompt.
+            AddActivity("Restart as administrator cancelled at the UAC prompt", ActivityStatus.Warning);
+        }
+        catch (Exception ex)
+        {
+            AddActivity($"Restart as administrator failed: {ex.Message}", ActivityStatus.Error);
+            LastRefreshText = $"Restart as administrator failed: {ex.Message}";
+        }
+    }
+
     private void OpenWindowsTool(string target, string displayName)
     {
         try
@@ -451,6 +559,14 @@ public sealed class TechnicianHomeViewModel : ObservableObject
             var n = _overview.Network;
             var g = _overview.Organization;
             var s = _overview.Security;
+            var diskLines = _overview.Disks.Count == 0
+                ? "  (no physical-disk details — refresh or run as administrator)"
+                : string.Join(Environment.NewLine, _overview.Disks.Select(disk =>
+                    $"  [{disk.Severity}] {disk.Model} — {disk.TypeLine} — {disk.HealthDisplay} ({disk.SmartDetail})"));
+            var volumeLines = _overview.Volumes.Count == 0
+                ? "  (no fixed volumes found)"
+                : string.Join(Environment.NewLine, _overview.Volumes.Select(vol =>
+                    $"  [{vol.Severity}] {vol.DriveLetter} {vol.Label} ({vol.FileSystem}) — {vol.UsageText}"));
             var text =
                 $"""
                 ISG Desk — System Summary ({_overview.CapturedAt:yyyy-MM-dd HH:mm:ss})
@@ -474,13 +590,17 @@ public sealed class TechnicianHomeViewModel : ObservableObject
                   Battery      : {hw.Battery}
                   BIOS         : {hw.BiosVersion}
 
+                STORAGE HEALTH (S.M.A.R.T.)
+                {diskLines}
+                {volumeLines}
+
                 USER
                   User         : {u.CurrentUser}
                   Profile      : {u.ProfilePath}
                   Admin        : {u.AdminRights} · {u.Elevated}
 
                 NETWORK
-                  Adapter      : {n.AdapterName} ({n.ConnectionType})
+                  Adapter      : {n.AdapterDisplay}
                   IPv4         : {n.Ipv4Address} {n.SubnetPrefix}
                   Gateway      : {n.DefaultGateway}
                   DNS          : {n.DnsServers}

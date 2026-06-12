@@ -213,7 +213,8 @@ public class PrintersViewModelTests : IDisposable
         SnmpPrinterCollector? snmpPrinterCollector = null,
         LocalPrinterCollector? localPrinterCollector = null,
         PrintServerCollector? printServerCollector = null,
-        PrinterQueueInstaller? printerQueueInstaller = null)
+        PrinterQueueInstaller? printerQueueInstaller = null,
+        Func<IReadOnlyList<AdPrintServerInfo>>? adPrintServerLocator = null)
     {
         var storage = new AppStorageService(_isolatedAppData);
         var psRunner = new PowerShellRunner(new NullLogger());
@@ -231,7 +232,8 @@ public class PrintersViewModelTests : IDisposable
             new NullLogger(),
             host,
             initialPrinterTarget,
-            initialPrintServer);
+            initialPrintServer,
+            adPrintServerLocator ?? (() => []));
         return (vm, host, cred);
     }
 
@@ -830,7 +832,9 @@ public class PrintersViewModelTests : IDisposable
         printer.Classification.Should().Be("Printer confirmed by SNMP");
         printer.SnmpInfo!.PrinterName.Should().Be("HP Office");
         other.SnmpStatus.Should().Be("SNMP responded");
-        other.Classification.Should().Contain("device type unknown");
+        // No print-protocol port and no Printer-MIB evidence → plainly not a printer,
+        // so the printers-only filter can hide it.
+        other.Classification.Should().Be("Not a printer (SNMP)");
         vm.SelectedPrinterScanResult.Should().Be(printer);
         vm.IsPrinterSnmpIdentifyRunning.Should().BeFalse();
         host.BusyTransitions.Should().ContainInOrder(true, false);
@@ -1240,5 +1244,195 @@ public class PrintersViewModelTests : IDisposable
         vm.LastPrinterDiscovery.LastInstall!.Category.Should().Be("AccessDenied");
         vm.ConfirmPrinterInstall.Should().BeFalse();
         host.StatusMessages.Should().Contain(message => message.Contains("Access denied"));
+    }
+
+    [Fact]
+    public async Task DetectPrintServer_NoLocalConnections_FallsBackToActiveDirectory()
+    {
+        var localCollector = new FakeLocalPrinterCollector(new PrinterDiscoveryResult
+        {
+            Verdict = "Local printers were enumerated.",
+            Severity = "OK",
+            LocalPrinters = [new PrinterInfo { Name = "Microsoft Print to PDF" }]
+        });
+        var printServerCollector = new FakePrintServerCollector(server => new PrinterDiscoveryResult
+        {
+            Source = server,
+            Verdict = "Print server reachable and printers were enumerated.",
+            Severity = "OK"
+        });
+        var (vm, host, _) = Build(
+            localPrinterCollector: localCollector,
+            printServerCollector: printServerCollector,
+            adPrintServerLocator: () => [new AdPrintServerInfo("PRINT01", 12), new AdPrintServerInfo("PRINT02", 3)]);
+
+        await ((NetScopeDiagnosticCenter.UI.AsyncRelayCommand)vm.DetectPrintServerCommand).ExecuteAsync(null);
+
+        vm.PrintServerName.Should().Be("PRINT01", "the busiest AD-published server wins");
+        printServerCollector.DiscoveredServers.Should().ContainSingle("PRINT01");
+        host.RememberedServers.Should().ContainSingle("PRINT01");
+        host.StatusMessages.Should().Contain(message => message.Contains("Active Directory"));
+        host.StatusMessages.Should().Contain(message => message.Contains("PRINT02"), "all published servers are reported");
+    }
+
+    [Fact]
+    public async Task DetectPrintServer_NothingLocallyAndNothingInAd_AsksForManualEntry()
+    {
+        var localCollector = new FakeLocalPrinterCollector(new PrinterDiscoveryResult
+        {
+            Verdict = "Local printers were enumerated.",
+            Severity = "OK",
+            LocalPrinters = [new PrinterInfo { Name = "Microsoft Print to PDF" }]
+        });
+        var printServerCollector = new FakePrintServerCollector(_ => new PrinterDiscoveryResult { Verdict = "Should not be called." });
+        var (vm, host, _) = Build(
+            localPrinterCollector: localCollector,
+            printServerCollector: printServerCollector,
+            adPrintServerLocator: () => []);
+
+        await ((NetScopeDiagnosticCenter.UI.AsyncRelayCommand)vm.DetectPrintServerCommand).ExecuteAsync(null);
+
+        printServerCollector.DiscoveredServers.Should().BeEmpty();
+        host.StatusMessages.Should().Contain(message => message.Contains("Enter the print server manually"));
+    }
+
+    [Fact]
+    public void FilteredScanResults_HidesSnmpConfirmedNonPrinters_ByDefault()
+    {
+        var (vm, _, _) = Build();
+        vm.LastPrinterDiscovery = new PrinterDiscoveryResult
+        {
+            ScanResults =
+            [
+                new PrinterScanResult { Address = "192.168.1.10", Classification = "Printer confirmed by SNMP" },
+                new PrinterScanResult { Address = "192.168.1.11", Classification = "Not a printer (SNMP)" },
+                new PrinterScanResult { Address = "192.168.1.12", Classification = "Likely printer" }
+            ]
+        };
+
+        vm.ShowOnlyPrinters.Should().BeTrue("printers-only is the production default");
+        vm.FilteredScanResults.Should().HaveCount(2);
+        vm.FilteredScanResults.Should().NotContain(row => row.Address == "192.168.1.11");
+        vm.HasHiddenScanResults.Should().BeTrue();
+        vm.HiddenScanResultCountText.Should().Contain("1 non-printer");
+
+        vm.ShowOnlyPrinters = false;
+
+        vm.FilteredScanResults.Should().HaveCount(3);
+        vm.HasHiddenScanResults.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task IdentifySnmp_ManualTargetWithoutPrintPorts_MarksRowAsNonPrinter()
+    {
+        var snmp = new FakeSnmpPrinterCollector(_ => new SnmpDeviceInfo
+        {
+            Address = "192.168.1.50",
+            Success = true,
+            PrinterConfirmed = false,
+            SysDescr = "Cisco SG350 managed switch"
+        });
+        var (vm, _, _) = Build(snmpPrinterCollector: snmp);
+        vm.PrinterTarget = "192.168.1.50";
+
+        await ((NetScopeDiagnosticCenter.UI.AsyncRelayCommand)vm.IdentifySelectedPrinterSnmpCommand).ExecuteAsync(null);
+
+        var row = vm.LastPrinterDiscovery!.ScanResults.Single(item => item.Address == "192.168.1.50");
+        row.Classification.Should().Be("Not a printer (SNMP)");
+        vm.FilteredScanResults.Should().NotContain(item => item.Address == "192.168.1.50");
+    }
+
+    [Fact]
+    public async Task IdentifySnmp_PrintPortHostWithoutPrinterMib_StaysLikelyPrinter()
+    {
+        var snmp = new FakeSnmpPrinterCollector(_ => new SnmpDeviceInfo
+        {
+            Address = "192.168.1.60",
+            Success = true,
+            PrinterConfirmed = false,
+            SysDescr = "Cheap label printer with minimal MIB"
+        });
+        var (vm, _, _) = Build(snmpPrinterCollector: snmp);
+        vm.LastPrinterDiscovery = new PrinterDiscoveryResult
+        {
+            ScanResults =
+            [
+                new PrinterScanResult { Address = "192.168.1.60", OpenPorts = [9100], Classification = "Likely printer" }
+            ]
+        };
+        vm.SelectedPrinterScanResult = vm.LastPrinterDiscovery.ScanResults[0];
+
+        await ((NetScopeDiagnosticCenter.UI.AsyncRelayCommand)vm.IdentifySelectedPrinterSnmpCommand).ExecuteAsync(null);
+
+        var row = vm.LastPrinterDiscovery.ScanResults[0];
+        row.Classification.Should().Be("Likely printer (SNMP identity unconfirmed)");
+        vm.FilteredScanResults.Should().Contain(row);
+    }
+
+    [Fact]
+    public async Task InstallQueue_WithSetDefaultTicked_MakesInstalledQueueTheDefault()
+    {
+        var localCollector = new FakeLocalPrinterCollector(new PrinterDiscoveryResult
+        {
+            Verdict = "Local printers were enumerated.",
+            Severity = "OK"
+        });
+        var installer = new FakePrinterQueueInstaller(connection => new PrinterInstallResult
+        {
+            Success = true,
+            Verdict = "Printer queue installed.",
+            Severity = "OK",
+            Category = "Installed"
+        });
+        var (vm, host, _) = Build(localPrinterCollector: localCollector, printerQueueInstaller: installer);
+        vm.SelectedPrintServerPrinter = new PrinterInfo
+        {
+            Name = "HP-Queue",
+            ConnectionName = @"\\PRTSRV01\HP-Queue",
+            Installable = true
+        };
+        vm.ConfirmPrinterInstall = true;
+        vm.SetDefaultAfterInstall = true;
+
+        await ((NetScopeDiagnosticCenter.UI.AsyncRelayCommand)vm.InstallSelectedPrinterQueueCommand).ExecuteAsync(null);
+
+        installer.Connections.Should().ContainSingle(@"\\PRTSRV01\HP-Queue");
+        localCollector.DefaultPrinterRequests.Should().ContainSingle(@"\\PRTSRV01\HP-Queue");
+    }
+
+    [Fact]
+    public async Task InstallQueue_WithSetDefaultUnticked_DoesNotTouchDefaultPrinter()
+    {
+        var localCollector = new FakeLocalPrinterCollector(new PrinterDiscoveryResult { Verdict = "OK", Severity = "OK" });
+        var installer = new FakePrinterQueueInstaller(_ => new PrinterInstallResult
+        {
+            Success = true,
+            Verdict = "Printer queue installed.",
+            Severity = "OK",
+            Category = "Installed"
+        });
+        var (vm, _, _) = Build(localPrinterCollector: localCollector, printerQueueInstaller: installer);
+        vm.SelectedPrintServerPrinter = new PrinterInfo
+        {
+            Name = "HP-Queue",
+            ConnectionName = @"\\PRTSRV01\HP-Queue",
+            Installable = true
+        };
+        vm.ConfirmPrinterInstall = true;
+        vm.SetDefaultAfterInstall = false;
+
+        await ((NetScopeDiagnosticCenter.UI.AsyncRelayCommand)vm.InstallSelectedPrinterQueueCommand).ExecuteAsync(null);
+
+        localCollector.DefaultPrinterRequests.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task AdPrintServerLocator_OnThisMachine_NeverThrows()
+    {
+        // Integration guard: on a workgroup machine this returns empty; on a domain
+        // machine it returns published servers. Either way it must not throw.
+        var result = await Task.Run(() => AdPrintServerLocator.FindPublishedPrintServers());
+
+        result.Should().NotBeNull();
     }
 }

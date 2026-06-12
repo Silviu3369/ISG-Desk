@@ -26,6 +26,7 @@ public sealed class TextSummaryBuilder
         AppendList(builder, "Health score penalties", result.HealthScore.Penalties);
         AppendDiagnosisSteps(builder, result.Steps);
         AppendQuickDiagnosisDetails(builder, result);
+        AppendTraceRoute(builder, result.TraceRoute);
 
         if (result.LastScenario is not null)
         {
@@ -81,6 +82,32 @@ public sealed class TextSummaryBuilder
         foreach (var result in results)
         {
             builder.AppendLine($"- {result.Target.Host}: DNS={result.DnsStatus}; Ping={result.PingStatus}; Latency={result.LatencyText}; Loss={result.LossText}; Ports={result.PortSummary}; Verdict={result.Verdict}; Owner={result.OwnerSuggestion}; Collector={result.CollectorStatus}");
+            if (!string.Equals(result.ShareStatus, "Not tested", StringComparison.OrdinalIgnoreCase))
+            {
+                builder.AppendLine($"  Share path: {result.ShareStatus}; {result.ShareDetails}");
+            }
+            if (result.ShareEnumStatus != "Not run")
+            {
+                builder.AppendLine($"  Published shares: {result.ShareEnumSummary}");
+            }
+        }
+        builder.AppendLine();
+    }
+
+    private static void AppendTraceRoute(StringBuilder builder, TraceRouteResult? trace)
+    {
+        if (trace is null)
+        {
+            return;
+        }
+
+        builder.AppendLine("Path (traceroute):");
+        builder.AppendLine($"- Target: {trace.Target}");
+        builder.AppendLine($"- Status: {trace.Status}");
+        builder.AppendLine($"- Summary: {trace.Summary}");
+        foreach (var hop in trace.Hops)
+        {
+            builder.AppendLine($"- Hop {hop.Hop}: {hop.Address} ({hop.Scope})");
         }
         builder.AppendLine();
     }
@@ -318,7 +345,9 @@ public sealed class TextSummaryBuilder
 
         foreach (var device in scan.Devices)
         {
-            builder.AppendLine($"- Device: {device.Address}; Type={device.DeviceType}; Layer={device.AffectedLayer}; Owner={device.OwnerSuggestion}; Confidence={device.Confidence}; Name={device.Identity?.SysName}; Description={device.Identity?.SysDescr}; Ping={(device.PingReachable ? "Yes" : "No / blocked")}; Confirmation={device.ConfirmationStatus}; Verdict={device.Verdict}");
+            // Discovery-era line: name precedence (label > sysName > NetBIOS > rDNS > vendor),
+            // MAC + vendor, technician label and open-port signature all carry signal now.
+            builder.AppendLine($"- Device: {device.Address}; Name={device.DisplayName}; Type={device.DeviceType} ({device.ClassificationConfidence}); Vendor={device.MacVendorDisplay}; MAC={device.MacAddressDisplay}; Label={device.FriendlyLabelDisplay}; SNMP location={device.LocationDisplay}; Ping={(device.PingReachable ? "Yes" : "No / blocked")}; Open ports={device.OpenPortSummary}; Confirmation={device.ConfirmationStatus}");
         }
 
         AppendList(builder, "Network device scan evidence", scan.Evidence);

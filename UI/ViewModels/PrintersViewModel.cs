@@ -39,6 +39,7 @@ public sealed class PrintersViewModel : ObservableObject
     private readonly SnmpCredentialStore _snmpCredentialStore;
     private readonly ILoggingService _logger;
     private readonly IHost _host;
+    private readonly Func<IReadOnlyList<AdPrintServerInfo>> _adPrintServerLocator;
 
     private PrinterDiscoveryResult? _lastPrinterDiscovery;
     private PrinterInfo? _selectedPrintServerPrinter;
@@ -54,6 +55,8 @@ public sealed class PrintersViewModel : ObservableObject
     private string _printerScanRange = string.Empty;
     private bool _saveSnmpCredentials;
     private bool _confirmPrinterInstall;
+    private bool _setDefaultAfterInstall;
+    private bool _showOnlyPrinters = true;
     private bool _isPrinterScanRunning;
     private bool _isPrinterSnmpIdentifyRunning;
 
@@ -67,8 +70,10 @@ public sealed class PrintersViewModel : ObservableObject
         ILoggingService logger,
         IHost host,
         string initialPrinterTarget = "",
-        string initialPrintServer = "")
+        string initialPrintServer = "",
+        Func<IReadOnlyList<AdPrintServerInfo>>? adPrintServerLocator = null)
     {
+        _adPrintServerLocator = adPrintServerLocator ?? (() => AdPrintServerLocator.FindPublishedPrintServers());
         _printerDiscoveryCollector = printerDiscoveryCollector ?? throw new ArgumentNullException(nameof(printerDiscoveryCollector));
         _localPrinterCollector = localPrinterCollector ?? throw new ArgumentNullException(nameof(localPrinterCollector));
         _printServerCollector = printServerCollector ?? throw new ArgumentNullException(nameof(printServerCollector));
@@ -165,6 +170,9 @@ public sealed class PrintersViewModel : ObservableObject
     public bool HasSavedSnmpCredentials => _snmpCredentialStore.HasSavedCredentials;
     public bool ConfirmPrinterInstall { get => _confirmPrinterInstall; set => SetProperty(ref _confirmPrinterInstall, value); }
 
+    /// <summary>When ticked, a successfully installed queue is also made the Windows default.</summary>
+    public bool SetDefaultAfterInstall { get => _setDefaultAfterInstall; set => SetProperty(ref _setDefaultAfterInstall, value); }
+
     public PrinterInfo? SelectedPrintServerPrinter
     {
         get => _selectedPrintServerPrinter;
@@ -223,8 +231,61 @@ public sealed class PrintersViewModel : ObservableObject
             {
                 SelectedPrintServerPrinter = value?.Printers.FirstOrDefault();
                 SelectedPrinterScanResult = value?.ScanResults.FirstOrDefault();
+                NotifyPrinterDiscoveryViewChanged();
             }
         }
+    }
+
+    /// <summary>Hides rows SNMP identified as non-printers (switch/NAS/UPS). Default on.</summary>
+    public bool ShowOnlyPrinters
+    {
+        get => _showOnlyPrinters;
+        set
+        {
+            if (SetProperty(ref _showOnlyPrinters, value))
+            {
+                NotifyPrinterDiscoveryViewChanged();
+            }
+        }
+    }
+
+    /// <summary>The IP Scan grid binds here so the printers-only filter applies.</summary>
+    public IReadOnlyList<PrinterScanResult> FilteredScanResults
+    {
+        get
+        {
+            var rows = LastPrinterDiscovery?.ScanResults;
+            if (rows is null) return [];
+            return ShowOnlyPrinters
+                ? rows.Where(row => !IsNonPrinterRow(row)).ToList()
+                : rows.ToList();
+        }
+    }
+
+    public string HiddenScanResultCountText
+    {
+        get
+        {
+            var total = LastPrinterDiscovery?.ScanResults.Count ?? 0;
+            var hidden = total - FilteredScanResults.Count;
+            return hidden > 0
+                ? $"{hidden} non-printer device(s) hidden — untick 'Only printers' to show them."
+                : string.Empty;
+        }
+    }
+
+    public bool HasHiddenScanResults => !string.IsNullOrEmpty(HiddenScanResultCountText);
+
+    private static bool IsNonPrinterRow(PrinterScanResult row) =>
+        row.Classification.StartsWith("Not a printer", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Re-raises every scan-grid-derived binding after rows/filter change.</summary>
+    private void NotifyPrinterDiscoveryViewChanged()
+    {
+        OnPropertyChanged(nameof(LastPrinterDiscovery));
+        OnPropertyChanged(nameof(FilteredScanResults));
+        OnPropertyChanged(nameof(HiddenScanResultCountText));
+        OnPropertyChanged(nameof(HasHiddenScanResults));
     }
 
     private async Task DetectPrinterIpAsync()
@@ -341,8 +402,23 @@ public sealed class PrintersViewModel : ObservableObject
             var candidates = DetectPrintServerCandidates(localPrinters);
             if (candidates.Count == 0)
             {
-                _host.NotifyStatus("No shared print server connection was found on this PC. Enter the print server manually.");
-                return;
+                // Nothing installed locally — ask Active Directory which servers publish
+                // shared queues (printQueue objects). Zero-config on domain PCs.
+                _host.NotifyStatus("No local print connection found — querying Active Directory for published print servers...");
+                var adServers = await Task.Run(() => _adPrintServerLocator());
+                if (adServers.Count == 0)
+                {
+                    _host.NotifyStatus("No print server found from local connections or Active Directory. Enter the print server manually.");
+                    return;
+                }
+
+                var adNames = string.Join(", ", adServers.Select(server => $"{server.Server} ({server.QueueCount} queue(s))"));
+                candidates = adServers
+                    .Select(server => new PrintServerCandidate(server.Server, $"Active Directory ({server.QueueCount} published queue(s))", server.QueueCount))
+                    .ToList();
+                _host.NotifyStatus(adServers.Count == 1
+                    ? $"Active Directory publishes print server {adNames}."
+                    : $"Active Directory publishes {adServers.Count} print servers: {adNames}. Using the busiest one.");
             }
 
             var candidate = candidates[0];
@@ -600,7 +676,7 @@ public sealed class PrintersViewModel : ObservableObject
 
             SelectedPrinterScanResult = row;
             _host.AttachPrinterDiscovery(LastPrinterDiscovery);
-            OnPropertyChanged(nameof(LastPrinterDiscovery));
+            NotifyPrinterDiscoveryViewChanged();
             _host.NotifyStatus(snmpInfo.Success
                 ? $"SNMP identity completed: {FirstNonEmpty(snmpInfo.PrinterName, snmpInfo.SysName, snmpInfo.SysDescr, options.Target)}"
                 : $"SNMP identity failed: {snmpInfo.Error}");
@@ -715,7 +791,7 @@ public sealed class PrintersViewModel : ObservableObject
                 ?? SelectedPrinterScanResult;
 
             _host.AttachPrinterDiscovery(discovery);
-            OnPropertyChanged(nameof(LastPrinterDiscovery));
+            NotifyPrinterDiscoveryViewChanged();
             _host.NotifyStatus(discovery.Verdict);
         }
         catch (OperationCanceledException)
@@ -801,6 +877,17 @@ public sealed class PrintersViewModel : ObservableObject
 
             if (install.Success)
             {
+                // "Set as default" at the tech's choice: the shared connection's local
+                // queue name IS the connection UNC, so it can be defaulted right away.
+                if (SetDefaultAfterInstall)
+                {
+                    var defaultResult = await _localPrinterCollector.SetDefaultPrinterAsync(normalizedConnection);
+                    LastPrinterDiscovery.Evidence.Add(defaultResult.Success
+                        ? $"Installed queue {normalizedConnection} was set as the Windows default printer."
+                        : $"Set-as-default after install failed: {defaultResult.Message}");
+                    _host.NotifyStatus(defaultResult.Message);
+                }
+
                 var local = await _localPrinterCollector.CollectAsync();
                 MergePrinterDiscovery(local, replaceLocal: true, attach: false);
                 LastPrinterDiscovery.LastInstall = install;
@@ -813,7 +900,7 @@ public sealed class PrintersViewModel : ObservableObject
             ConfirmPrinterInstall = false;
 
             _host.AttachPrinterDiscovery(LastPrinterDiscovery);
-            OnPropertyChanged(nameof(LastPrinterDiscovery));
+            NotifyPrinterDiscoveryViewChanged();
             _host.NotifyStatus(install.Success ? install.Verdict : $"{install.Verdict} {install.Error}");
         }
         catch (Exception ex)
@@ -871,7 +958,7 @@ public sealed class PrintersViewModel : ObservableObject
         discovery.Severity = discovery.ScanResults.Count > 0 ? "OK" : "Unknown";
 
         _host.AttachPrinterDiscovery(discovery);
-        OnPropertyChanged(nameof(LastPrinterDiscovery));
+        NotifyPrinterDiscoveryViewChanged();
         _host.NotifyStatus(discovery.Verdict);
     }
 
@@ -964,11 +1051,22 @@ public sealed class PrintersViewModel : ObservableObject
 
         if (snmpInfo.Success)
         {
-            row.Classification = snmpInfo.PrinterConfirmed ? "Printer confirmed by SNMP" : "SNMP responded; device type unknown";
-            row.Confidence = snmpInfo.PrinterConfirmed ? "High" : "Medium";
+            // A host with a print-protocol port open stays a printer even when its MIB is
+            // too limited to confirm; "Not a printer" is reserved for SNMP-only targets
+            // (switch/NAS/UPS the tech typed in by hand) so the printers-only filter can
+            // hide exactly those.
+            var hasPrintPort = row.OpenPorts.Any(port => port is 9100 or 515 or 631);
+            row.Classification = snmpInfo.PrinterConfirmed
+                ? "Printer confirmed by SNMP"
+                : hasPrintPort
+                    ? "Likely printer (SNMP identity unconfirmed)"
+                    : "Not a printer (SNMP)";
+            row.Confidence = snmpInfo.PrinterConfirmed ? "High" : hasPrintPort ? "Medium" : "High";
             row.Reason = snmpInfo.PrinterConfirmed
                 ? "Printer-specific SNMP fields or printer identity were returned."
-                : "SNMP system identity returned, but Printer-MIB did not confirm this as a printer.";
+                : hasPrintPort
+                    ? "Printer port is open but Printer-MIB did not confirm identity (limited MIB support)."
+                    : "SNMP identity returned, but no printer protocol port or Printer-MIB evidence exists.";
             row.Details = FirstNonEmpty(snmpInfo.PrinterName, snmpInfo.SysDescr, row.Details, "SNMP identity returned.");
             return;
         }
@@ -1058,7 +1156,7 @@ public sealed class PrintersViewModel : ObservableObject
         TrimRolling(current.Limitations, MaxEvidenceLines);
         LastPrinterDiscovery = current;
         _host.AttachPrinterDiscovery(current);
-        OnPropertyChanged(nameof(LastPrinterDiscovery));
+        NotifyPrinterDiscoveryViewChanged();
     }
 
     private void LoadSavedSnmpV3Credential()
@@ -1185,7 +1283,7 @@ public sealed class PrintersViewModel : ObservableObject
 
         if (attach)
             _host.AttachPrinterDiscovery(current);
-        OnPropertyChanged(nameof(LastPrinterDiscovery));
+        NotifyPrinterDiscoveryViewChanged();
     }
 
     private void ApplySelectedPrinterNetworkAdapterToDiscovery(PrinterNetworkAdapterInfo? adapter)
@@ -1240,7 +1338,7 @@ public sealed class PrintersViewModel : ObservableObject
         TrimRolling(current.Limitations, MaxEvidenceLines);
         LastPrinterDiscovery = current;
         _host.AttachPrinterDiscovery(current);
-        OnPropertyChanged(nameof(LastPrinterDiscovery));
+        NotifyPrinterDiscoveryViewChanged();
     }
 
     private static PrinterDiscoveryResult CreatePrinterSession() => new()

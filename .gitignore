@@ -25,3 +25,6 @@ desktop.ini
 
 # ===== Local runtime data (if ever produced inside the repo) =====
 *.log
+
+# ===== Self-contained release artifacts =====
+ISG-Desk-*-selfcontained/
