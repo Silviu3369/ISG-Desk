@@ -207,14 +207,46 @@ public partial class App : Application
                 "ISG Desk",
                 "Logs");
             Directory.CreateDirectory(logFolder);
+            var logPath = Path.Combine(logFolder, "startup-errors.log");
+            TrimLogIfOversized(logPath);
             File.AppendAllText(
-                Path.Combine(logFolder, "startup-errors.log"),
+                logPath,
                 $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss zzz}{Environment.NewLine}{exception}{Environment.NewLine}{Environment.NewLine}");
         }
         catch
         {
             // Startup error logging must never trigger a second crash.
         }
+    }
+
+    /// <summary>
+    /// Caps startup-errors.log at ~512 KB by keeping only the newest ~64 KB.
+    /// A repeating fault (e.g. one unobserved exception per scanned device)
+    /// must not grow the file unbounded across sessions.
+    /// </summary>
+    private static void TrimLogIfOversized(string logPath)
+    {
+        const long maxBytes = 512 * 1024;
+        const int keepBytes = 64 * 1024;
+
+        var info = new FileInfo(logPath);
+        if (!info.Exists || info.Length <= maxBytes)
+        {
+            return;
+        }
+
+        var text = File.ReadAllText(logPath);
+        var tail = text[^Math.Min(keepBytes, text.Length)..];
+        // Start at an entry boundary so the kept tail begins with a timestamp line.
+        var boundary = tail.IndexOf($"{Environment.NewLine}{Environment.NewLine}", StringComparison.Ordinal);
+        if (boundary >= 0)
+        {
+            tail = tail[(boundary + Environment.NewLine.Length * 2)..];
+        }
+
+        File.WriteAllText(
+            logPath,
+            $"[older entries trimmed {DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss zzz}]{Environment.NewLine}{tail}");
     }
 
     protected override void OnExit(ExitEventArgs e)

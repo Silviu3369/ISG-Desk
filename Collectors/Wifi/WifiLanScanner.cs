@@ -7,6 +7,7 @@ using System.Net.Sockets;
 using System.Text;
 using System.Text.Json.Serialization;
 using System.Xml.Linq;
+using NetScopeDiagnosticCenter.Core;
 using NetScopeDiagnosticCenter.Core.Models.Wifi;
 using NetScopeDiagnosticCenter.Core.Wifi;
 using NetScopeDiagnosticCenter.Infrastructure;
@@ -346,7 +347,9 @@ if (-not $json) { '[]' } elseif ($json[0] -ne '[') { "[$json]" } else { $json }
                     break;
                 }
 
-                var receiveTask = udp.ReceiveAsync(cancellationToken).AsTask();
+                // Observed: when the deadline wins the race below, the abandoned receive
+                // faults later (client disposed) and must not go unobserved.
+                var receiveTask = TaskFaultObserver.Observe(udp.ReceiveAsync(cancellationToken).AsTask());
                 var delayTask = Task.Delay(remaining, cancellationToken);
                 var completed = await Task.WhenAny(receiveTask, delayTask).ConfigureAwait(false);
                 if (completed != receiveTask)
@@ -556,7 +559,9 @@ if (-not $json) { '[]' } elseif ($json[0] -ne '[') { "[$json]" } else { $json }
                     break;
                 }
 
-                var receiveTask = udp.ReceiveAsync(cancellationToken).AsTask();
+                // Observed: when the deadline wins the race below, the abandoned receive
+                // faults later (client disposed) and must not go unobserved.
+                var receiveTask = TaskFaultObserver.Observe(udp.ReceiveAsync(cancellationToken).AsTask());
                 var delayTask = Task.Delay(remaining, cancellationToken);
                 var completed = await Task.WhenAny(receiveTask, delayTask).ConfigureAwait(false);
                 if (completed != receiveTask)
@@ -950,7 +955,9 @@ if (-not $json) { '[]' } elseif ($json[0] -ne '[') { "[$json]" } else { $json }
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var dns = Dns.GetHostEntryAsync(ip);
+            // Observed because the lookup commonly faults with "no such host" for LAN
+            // IPs without a PTR record — also after losing the timeout race below.
+            var dns = TaskFaultObserver.Observe(Dns.GetHostEntryAsync(ip));
             var done = await Task.WhenAny(dns, Task.Delay(ReverseDnsTimeout, cancellationToken))
                 .ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();

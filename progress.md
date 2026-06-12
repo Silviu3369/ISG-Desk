@@ -2,6 +2,41 @@
 
 Running log of meaningful changes: what changed, why, and the verification numbers.
 
+## 2026-06-12 — Unobserved task exceptions: observed at the source, error log capped
+
+**Audit**: %LOCALAPPDATA%\ISG Desk\Logs\startup-errors.log had grown to 6,700 lines
+(649 KB). Histogram: 114 SocketException/AggregateException pairs — "No such host
+is known" from reverse-DNS lookups and disposed UDP receives surfacing via
+TaskScheduler.UnobservedTaskException on the finalizer thread; plus 53 stale
+XamlParseException entries from 2026-06-04 (CongestionMeterValue TwoWay binding —
+already fixed, now Mode=OneWay).
+
+**Root cause**: tasks abandoned by timeout races. WifiLanScanner.ResolveHostAsync
+raced Dns.GetHostEntryAsync against Task.Delay via Task.WhenAny and never awaited
+the loser — every LAN IP without a PTR record produced one unobserved fault per
+scan. Same family: mDNS/SSDP UdpClient.ReceiveAsync abandoned at deadline faults
+when the client is disposed; the four Dns...WaitAsync(timeout) call sites leak the
+inner task on the timeout-then-fault path.
+
+**What changed**
+- New Core/TaskFaultObserver: attaches a fault-observing continuation (reads
+  t.Exception OnlyOnFaulted) and returns the same task for fluent use.
+- Applied at all 7 leak sites: WifiLanScanner (reverse DNS + mDNS receive + SSDP
+  receive), NetworkDeviceCollector, PrinterDiscoveryCollector,
+  TargetShareDiscoveryCollector, TargetServiceDiscoveryCollector.
+- App.LogStartupException now trims startup-errors.log to its newest 64 KB once it
+  exceeds 512 KB (entry-boundary aware), so a repeating fault can never grow it
+  unbounded again.
+
+**Verification**
+- 822/822 tests (5 new TaskFaultObserver pins: identity pass-through, result
+  pass-through, fault propagation to awaiters, WhenAny-race behavior).
+- Live A/B was attempted but is inconclusive by nature: the unobserved-exception
+  event only fires on a gen2 GC, which short sessions never trigger (the pre-fix
+  control also logged zero). Non-regression verified live on the fixed build:
+  Wi-Fi Analyzer -> Start Analyzer -> Auto Detect found 11 LAN devices (the exact
+  rDNS path that leaked), no new log entries, clean close.
+
 ## 2026-06-12 — Release v1.1.0 published to GitHub
 
 - Version bumped 1.0.0 -> 1.1.0 (csproj + build-release.ps1 default).

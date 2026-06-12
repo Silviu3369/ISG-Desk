@@ -209,7 +209,8 @@ public class TargetServiceDiscoveryCollector
     {
         try
         {
-            var entry = await Dns.GetHostEntryAsync(address).WaitAsync(ReverseDnsTimeout, cancellationToken);
+            var entry = await TaskFaultObserver.Observe(Dns.GetHostEntryAsync(address))
+                .WaitAsync(ReverseDnsTimeout, cancellationToken);
             return entry.HostName;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

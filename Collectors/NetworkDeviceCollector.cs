@@ -1710,7 +1710,7 @@ ConvertTo-Json -InputObject $candidates -Depth 5
     {
         try
         {
-            var entry = await Dns.GetHostEntryAsync(address)
+            var entry = await TaskFaultObserver.Observe(Dns.GetHostEntryAsync(address))
                 .WaitAsync(ReverseDnsTimeout, cancellationToken);
             return entry.HostName;
         }
